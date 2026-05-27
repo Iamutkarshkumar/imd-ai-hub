@@ -459,7 +459,7 @@ function ChatPanel({ accent, selected }) {
     addMessage({role:'user',text:m});
     setQuery(''); setIsTyping(true);
     try {
-      const res=await fetch('http://localhost:8000/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:m})});
+      const res=await fetch(`${process.env.NEXT_PUBLIC_API_URL||'http://localhost:8000'}/chat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:m})});
       if(!res.ok) throw new Error(`${res.status}`);
       const data=await res.json();
       let reply=typeof data.ai_response==='string'?data.ai_response:'Sorry, could not process that.';
@@ -622,7 +622,7 @@ export default function WeatherDashboard() {
   },[selected?.city,selected?.lat,selected?.lon]);
 
   useEffect(()=>{
-    fetch('http://localhost:8000/weather-stats')
+    fetch(`${process.env.NEXT_PUBLIC_API_URL||'http://localhost:8000'}/weather-stats`)
       .then(r=>r.json())
       .then(data=>{ const e=data.map(enrichCity); setStats(e); setSelected(e[0]||null); })
       .catch(()=>{ const d=generateDemoData(); setStats(d); setSelected(d[0]); });
