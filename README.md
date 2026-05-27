@@ -366,7 +366,7 @@ This project was developed as a **solo internship project** at the **India Meteo
 ## 🙏 Acknowledgements
 
 - **India Meteorological Department (IMD)** — for internship opportunity, API access approval, and official weather bulletin data
-- **[Anshul Chauhan](https://www.linkedin.com/in/anshul-chauhan-7a44a775)**, Scientist B, IMD — for mentorship and project guidance
+- **[Anshul Chauhan](https://www.linkedin.com/in/anshul-chauhan-7a44a775)**, Scientist D, IMD — for mentorship and project guidance
 - **Open-Meteo** — free, open-source weather API used as interim data source
 - **Meta AI** — Llama 3.1 open-source language model
 - **Ollama** — local LLM inference engine
