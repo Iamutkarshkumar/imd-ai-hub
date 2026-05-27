@@ -1,0 +1,7 @@
+city,date,temperature,feels_like,high,low,humidity,condition,warning,wind_speed,wind_dir,wind_deg,pressure,visibility,uv_index,aqi,cloud_cover
+New Delhi,2026-05-15,42,45,46,36,15,Sunny,Heatwave Alert,18,SW,225,1002,6,11,187,10
+Mumbai,2026-05-15,32,35,34,27,85,Cloudy,None,22,W,270,1008,5,4,94,75
+Bengaluru,2026-05-15,28,27,31,22,60,Rain,Yellow Alert,14,NE,45,1012,4,3,58,90
+Chennai,2026-05-15,35,38,37,29,75,Humid,None,16,SE,135,1006,7,7,112,60
+Kolkata,2026-05-15,30,33,33,25,80,Rain,None,20,S,180,1009,4,5,143,85
+Hyderabad,2026-05-15,33,35,36,27,70,Sunny,None,12,NW,315,1010,9,8,76,25
