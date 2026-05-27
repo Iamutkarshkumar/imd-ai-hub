@@ -718,6 +718,9 @@ def clean_response(text: str) -> str:
     return text
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
+@app.get("/")
+async def root():
+    return {"status": "Imd API is running!"}
 @app.get("/weather-stats")
 async def get_stats(db: Session = Depends(get_db)):
     records = db.query(WeatherRecord).order_by(WeatherRecord.state, WeatherRecord.city).all()
