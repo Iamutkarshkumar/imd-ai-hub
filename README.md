@@ -7,7 +7,7 @@
 ### *Real-time AI-powered Weather Dashboard for India*
 
 > **Solo Internship Project** at the **India Meteorological Department, Ministry of Earth Sciences, Government of India**  
-> Under the guidance of **[Anshul Chauhan](https://www.linkedin.com/in/anshul-chauhan-7a44a775)**, Scientist B — IMD
+> Under the guidance of **[Anshul Chauhan](https://www.linkedin.com/in/anshul-chauhan-7a44a775)**, Scientist D — IMD
 
 <br/>
 
