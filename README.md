@@ -37,8 +37,6 @@
 
 ## 📸 Screenshots
 
-> *Add your screenshots here — `Win + Shift + S` → save to `screenshots/` folder*
-
 | | |
 |---|---|
 | ![Dashboard Day](screenshots/dashboard_day.png) | ![Dashboard Night](screenshots/dashboard_night.png) |

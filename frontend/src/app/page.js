@@ -31,18 +31,37 @@ const THEMES = {
   default: { day:{ g1:'#0a2040',g2:'#163060',g3:'#1e3e7a',accent:'#60a5fa',glow:'rgba(96,165,250,0.25)',label:'Weather' },night:{ g1:'#050d1a',g2:'#0d1f35',g3:'#152d4a',accent:'#60a5fa',glow:'rgba(96,165,250,0.12)',label:'Weather' },emoji:'🌡️' },
 };
 
+// function getTheme(condition = '', sunrise = '06:00', sunset = '18:30') {
+//   const c = condition.toLowerCase();
+//   const day = isCurrentlyDay(sunrise, sunset);
+//   for (const [key, val] of Object.entries(THEMES)) {
+//     if (c.includes(key)) {
+//       const variant = day ? val.day : val.night;
+//       return { ...variant, key, emoji: val.emoji, isDay: day };
+//     }
+//   }
+//   const def = THEMES.default;
+//   const variant = day ? def.day : def.night;
+//   return { ...variant, key: 'default', emoji: def.emoji, isDay: day };
+// }
 function getTheme(condition = '', sunrise = '06:00', sunset = '18:30') {
   const c = condition.toLowerCase();
   const day = isCurrentlyDay(sunrise, sunset);
-  for (const [key, val] of Object.entries(THEMES)) {
-    if (c.includes(key)) {
-      const variant = day ? val.day : val.night;
-      return { ...variant, key, emoji: val.emoji, isDay: day };
-    }
-  }
-  const def = THEMES.default;
-  const variant = day ? def.day : def.night;
-  return { ...variant, key: 'default', emoji: def.emoji, isDay: day };
+
+  // Group conditions to the correct theme key
+  let matchedKey = 'default';
+  if (c.match(/storm|thunder/)) matchedKey = 'stormy';
+  else if (c.match(/rain|drizzle|shower/)) matchedKey = 'rainy';
+  else if (c.match(/cloud|overcast/)) matchedKey = 'cloudy';
+  else if (c.match(/fog|mist|haze/)) matchedKey = 'foggy';
+  else if (c.match(/wind/)) matchedKey = 'windy';
+  else if (c.match(/clear|sun/)) matchedKey = day ? 'sunny' : 'clear';
+
+  // Apply the matched theme
+  const themeData = THEMES[matchedKey] || THEMES.default;
+  const variant = day ? themeData.day : themeData.night;
+  
+  return { ...variant, key: matchedKey, emoji: themeData.emoji, isDay: day };
 }
 
 /* ─── Utility labels ──────────────────────────────────────────────────────── */
@@ -664,8 +683,21 @@ export default function WeatherDashboard() {
   const accent = theme.accent;
   const glow   = theme.glow;
   const isDay  = theme.isDay;
-  const isRain = selected?.condition?.toLowerCase().match(/rain|storm/);
-  const isCloudy = selected?.condition?.toLowerCase().match(/cloud|fog/);
+  // const isRain = selected?.condition?.toLowerCase().match(/rain|storm/);
+  // const isCloudy = selected?.condition?.toLowerCase().match(/cloud|fog/);
+  const condStr = (selected?.condition || '').toLowerCase();
+  
+  // Prioritize explicit database booleans first, fallback to robust text matching
+  const isRain = 
+    selected?.is_raining === true || 
+    condStr.match(/rain|drizzle|shower|storm|thunder|precipitation/);
+    
+  const isThunderstorm = 
+    selected?.is_thunderstorm === true || 
+    condStr.match(/storm|thunder|lightning/);
+    
+  const isCloudy = condStr.match(/cloud|fog|overcast|haze/);
+
   const activeAlerts = stats.filter(s=>s.warning&&s.warning!=='None');
 
   const radarData = selected?[
