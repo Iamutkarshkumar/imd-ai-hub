@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://upload.wikimedia.org/wikipedia/en/thumb/f/f5/India_Meteorological_Department.svg/180px-India_Meteorological_Department.svg.png" alt="IMD Logo" width="80"/>
+<img src="screenshots/imd_logo.png" alt="IMD Logo" width="80"/>
 
 # 🌐 IMD AI Intelligence Hub
 
