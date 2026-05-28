@@ -59,3 +59,5 @@ pypdf==5.1.0
 
 groq==0.11.0
 httpx==0.27.2
+
+apscheduler==3.10.4

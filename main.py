@@ -488,7 +488,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from dotenv import load_dotenv
-
+from contextlib import asynccontextmanager 
+import asyncio
+from contextlib import asynccontextmanager
+import asyncio
 from database import get_db, WeatherRecord, FetchLog
 try:
     from vector_store import search_bulletins, format_rag_context, collection_stats
@@ -509,7 +512,42 @@ load_dotenv()
 # It automatically picks up GROQ_API_KEY from your .env file
 groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 
-app = FastAPI(title="IMD Intelligent Dashboard API v4")
+async def run_live_updater():
+    """Runs the weather updater every 30 min inside FastAPI."""
+    while True:
+        try:
+            print("🔄 Running weather update...")
+            from imd_live_updater import run_once   # only import when needed
+            await asyncio.get_event_loop().run_in_executor(None, run_once)
+            print("✅ Weather update complete. Next in 30 min.")
+        except Exception as e:
+            print(f"⚠️ Updater error (non-fatal): {e}")
+        await asyncio.sleep(1800)  # 30 minutes
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(run_live_updater())
+    yield
+    task.cancel()
+
+async def updater_loop():
+    await asyncio.sleep(10)  # wait for app to fully start first
+    while True:
+        try:
+            from imd_live_updater import update_weather
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, update_weather)
+            print("✅ Weather update complete")
+        except Exception as e:
+            print(f"⚠️ Updater error: {e}")
+        await asyncio.sleep(1800)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(updater_loop())
+    yield
+
+app = FastAPI(title="IMD Intelligent Dashboard API v4", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
