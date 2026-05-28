@@ -89,6 +89,12 @@ const GLOBAL_CSS = `
 @keyframes shimmer{0%{background-position:-400px 0;}100%{background-position:400px 0;}}
 @keyframes floatUp{0%{transform:translateY(0) scale(1);opacity:0.6;}100%{transform:translateY(-80px) scale(0.3);opacity:0;}}
 @keyframes cloud{0%{transform:translateX(-120px);}100%{transform:translateX(110vw);}}
+@keyframes blowWind {
+  0% { transform: translateX(120vw) scaleX(1); opacity: 0; }
+  15% { opacity: 0.3; }
+  85% { opacity: 0.3; }
+  100% { transform: translateX(-20vw) scaleX(2.5); opacity: 0; }
+}
 @keyframes voiceBar{from{transform:scaleY(0.3);opacity:0.5;}to{transform:scaleY(1);opacity:1;}}
 .city-row{transition:background 0.18s,transform 0.18s;cursor:pointer;}
 .city-row:hover{background:rgba(255,255,255,0.08)!important;transform:translateX(3px);}
@@ -163,6 +169,31 @@ function RainEffect({ isDay }) {
         <div key={i} style={{position:'absolute',left:d.left,top:'-5%',width:'1.5px',height:d.h,
           background:`${dropColor}${d.op})`,animationName:'rain',animationDuration:d.dur,
           animationDelay:d.del,animationTimingFunction:'linear',animationIterationCount:'infinite'}}/>
+      ))}
+    </div>
+  );
+}
+
+const WIND_STREAKS = Array.from({ length: 12 }, () => ({
+  top: `${Math.random() * 85 + 5}%`,
+  width: `${Math.random() * 150 + 80}px`, // long streaks
+  dur: `${Math.random() * 1.2 + 0.8}s`, // fast moving
+  del: `${Math.random() * 2.5}s`,
+  op: Math.random() * 0.2 + 0.1,
+}));
+
+function WindEffect({ isDay }) {
+  // Streaks are white during the day, slight blue/gray at night
+  const color = isDay ? '255,255,255' : '170,200,240'; 
+  return (
+    <div style={{position:'absolute',inset:0,overflow:'hidden',pointerEvents:'none',zIndex:0}}>
+      {WIND_STREAKS.map((w, i) => (
+        <div key={i} style={{
+          position: 'absolute', top: w.top, left: '-20%', width: w.width, height: '2px',
+          background: `linear-gradient(90deg, rgba(${color},0) 0%, rgba(${color},${w.op}) 50%, rgba(${color},0) 100%)`,
+          borderRadius: '50%',
+          animation: `blowWind ${w.dur} ${w.del} linear infinite`
+        }} />
       ))}
     </div>
   );
@@ -697,6 +728,7 @@ export default function WeatherDashboard() {
     condStr.match(/storm|thunder|lightning/);
     
   const isCloudy = condStr.match(/cloud|fog|overcast|haze/);
+  const isWindy = condStr.match(/wind|breeze|gale|blustery|dust/) || (selected?.wind_speed >= 22);
 
   const activeAlerts = stats.filter(s=>s.warning&&s.warning!=='None');
 
@@ -720,6 +752,8 @@ export default function WeatherDashboard() {
       {isRain&&<RainEffect isDay={isDay}/>}
       {(isRain||isCloudy)&&<CloudLayer/>}
       {!isRain&&!isCloudy&&<WeatherParticles accent={accent}/>}
+      {/* Show wind streaks if it's windy, even if it is raining! */}
+      {isWindy && <WindEffect isDay={isDay} />}
 
       {/* ALERT TICKER */}
       {activeAlerts.length>0&&(
