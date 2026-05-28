@@ -844,8 +844,12 @@ async def chat_with_weather(query: ChatQuery, db: Session = Depends(get_db)):
     rag_context = format_rag_context(rag_hits, max_chars=500)
     
     prompt = build_prompt(user_text, weather_context, rag_context)
-    raw = await ask_llm_async(prompt)
-    response = clean_response(raw)
+    try:
+        raw = await ask_llm_async(prompt)
+        response = clean_response(raw)
+    except Exception as e:
+        print(f"❌ Groq error: {e}")
+        return {"cities_detected": cities[:8], "ai_response": f"AI temporarily unavailable: {str(e)}"}
 
     return {"cities_detected": cities[:8], "ai_response": response}
 
