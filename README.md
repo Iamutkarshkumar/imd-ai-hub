@@ -14,7 +14,7 @@
 
 [![Live Demo](https://img.shields.io/badge/🚀%20Live%20Demo-imd--ai--hub.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://imd-ai-hub.vercel.app)
 [![API Status](https://img.shields.io/badge/⚡%20API-imd--backend2.onrender.com-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://imd-backend2.onrender.com/health)
-[![GitHub Stars](https://img.shields.io/github/stars/YOUR_USERNAME/imd-ai-hub?style=for-the-badge&logo=github&color=yellow)](https://github.com/YOUR_USERNAME/imd-ai-hub/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/Iamutkarshkumar/imd-ai-hub?style=for-the-badge&logo=github&color=yellow)](https://github.com/Iamutkarshkumar/imd-ai-hub/stargazers)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 <br/>
@@ -44,7 +44,7 @@
 | ![Dashboard Day](screenshots/dashboard_day.png) | ![Dashboard Night](screenshots/dashboard_night.png) |
 | **Day Mode** — Dynamic theme based on actual sunrise time | **Night Mode** — Auto-switches after sunset |
 | ![Overview](screenshots/overview.png) | ![Analysis](screenshots/analysis.png) |
-| **Overview** — Live stat cards + temperature charts | **Analysis** — Radar profile + Wind Rose |
+| **Overview** — Live stat cards + temperature + humidity charts| **Analysis** — Top 10 Hottest and  Coldest cities |
 | ![Hourly](screenshots/hourly.png) | ![Weekly](screenshots/weekly.png) |
 | **Hourly** — Real 24hr forecast from Open-Meteo | **Weekly** — 7-day forecast with temp range bars |
 | ![AI Chat](screenshots/chat.png) | ![Voice Input](screenshots/voice.png) |
@@ -99,34 +99,34 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    BROWSER (Client)                          │
+│                    BROWSER (Client)                         │
 │  Next.js 15 · React 18 · Recharts · Web Speech API          │
 │  Deployed on: Vercel (imd-ai-hub.vercel.app)                │
 └─────────────────────────┬───────────────────────────────────┘
                           │ HTTPS (permanent URL)
 ┌─────────────────────────▼───────────────────────────────────┐
-│              FastAPI Backend                                  │
+│              FastAPI Backend                                │
 │       Deployed on: Render.com (always on via UptimeRobot)   │
-│       imd-backend2.onrender.com                              │
-│                                                              │
+│       imd-backend2.onrender.com                             │
+│                                                             │
 │  /weather-stats  /chat  /search  /alerts  /states  /health  │
-│                                                              │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │  SQLAlchemy │  │  Groq API    │  │  Keyword RAG      │  │
-│  │  ORM Layer  │  │  Llama 3.1   │  │  IMD Bulletins    │  │
-│  └──────┬──────┘  └──────────────┘  └───────────────────┘  │
-│         │                                                    │
+│                                                             │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────┐   │
+│  │  SQLAlchemy │  │  Groq API    │  │  Keyword RAG      │   │
+│  │  ORM Layer  │  │  Llama 3.1   │  │  IMD Bulletins    │   │ 
+│  └──────┬──────┘  └──────────────┘  └───────────────────┘   │
+│         │                                                   │
 │  ┌──────▼──────────────────────────────────────────────┐    │
-│  │  Background Task (asyncio lifespan)                  │    │
-│  │  update_weather() runs every 30 min inside FastAPI   │    │
+│  │  Background Task (asyncio lifespan)                 │    │
+│  │  update_weather() runs every 30 min inside FastAPI  │    │
 │  └──────┬──────────────────────────────────────────────┘    │
-└─────────┼────────────────────────────────────────────────────┘
+└─────────┼───────────────────────────────────────────────────┘
           │
 ┌─────────▼──────────────┐     ┌──────────────────────────────┐
-│   Neon PostgreSQL       │     │   Open-Meteo API             │
-│   (Serverless, free)    │     │   Open-Meteo Air Quality     │
-│   weather_records       │◄────│   Free · No auth needed      │
-│   fetch_logs            │     │   66 cities · every 30 min   │
+│   Neon PostgreSQL      │     │   Open-Meteo API             │
+│   (Serverless, free)   │     │   Open-Meteo Air Quality     │
+│   weather_records      │◄─── │   Free · No auth needed      │
+│   fetch_logs           │     │   66 cities · every 30 min   │
 └────────────────────────┘     └──────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
