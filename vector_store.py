@@ -151,7 +151,7 @@ def search_bulletins(query: str, n_results: int = 2) -> list:
                 if key in b["text"].lower():
                     score += 1
         scored.append((score, b))
-    scored.sort(reverse=True)
+    scored.sort(key=lambda x: x[0], reverse=True)
     return [b for _, b in scored[:n_results]]
 
 
