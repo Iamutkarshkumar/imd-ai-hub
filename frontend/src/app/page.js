@@ -728,7 +728,7 @@ export default function WeatherDashboard() {
     condStr.match(/storm|thunder|lightning/);
     
   const isCloudy = condStr.match(/cloud|fog|overcast|haze/);
-  const isWindy = condStr.match(/wind|breeze|gale|blustery|dust/) || (selected?.wind_speed >= 22);
+  const isWindy = condStr.match(/wind|breeze|gale|blustery|dust/) || (selected?.wind_speed >= 17);
 
   const activeAlerts = stats.filter(s=>s.warning&&s.warning!=='None');
 
