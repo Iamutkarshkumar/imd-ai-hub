@@ -23,7 +23,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("updater.log", encoding="utf-8"),
     ]
 )
 log = logging.getLogger(__name__)
