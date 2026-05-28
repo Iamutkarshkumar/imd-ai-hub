@@ -490,7 +490,15 @@ from sqlalchemy import or_, func
 from dotenv import load_dotenv
 
 from database import get_db, WeatherRecord, FetchLog
-from vector_store import search_bulletins, format_rag_context, collection_stats
+try:
+    from vector_store import search_bulletins, format_rag_context, collection_stats
+    RAG_AVAILABLE = True
+except Exception as e:
+    print(f"⚠️ RAG unavailable (likely OOM): {e}")
+    RAG_AVAILABLE = False
+    def search_bulletins(*a, **kw): return []
+    def format_rag_context(*a, **kw): return ""
+    def collection_stats(): return {"total_chunks": 0}
 
 # ── NEW: Groq Cloud API Setup ─────────────────────────────────────────────
 from groq import AsyncGroq
