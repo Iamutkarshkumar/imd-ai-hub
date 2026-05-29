@@ -20,14 +20,14 @@ function isCurrentlyDay(sunriseStr = '06:00', sunsetStr = '18:30') {
 
 /* ─── Theme map ───────────────────────────────────────────────────────────── */
 const THEMES = {
-  sunny:   { day:{ g1:'#7c4a00',g2:'#c47800',g3:'#f5a623',accent:'#f59e0b',glow:'rgba(245,158,11,0.3)',label:'Sunny' },   night:{ g1:'#1c0a00',g2:'#2e1800',g3:'#3d2800',accent:'#f59e0b',glow:'rgba(245,158,11,0.15)',label:'Sunny' },   emoji:'☀️' },
+  sunny: { day:{ g1:'#1a1200',g2:'#2e1f00',g3:'#3d2c00',accent:'#f59e0b',glow:'rgba(245,158,11,0.2)',label:'Sunny' },   night:{ g1:'#1c0a00',g2:'#2e1800',g3:'#3d2800',accent:'#f59e0b',glow:'rgba(245,158,11,0.15)',label:'Sunny' },   emoji:'☀️' },
   cloudy:  { day:{ g1:'#3a4a5c',g2:'#4e6070',g3:'#627888',accent:'#94a3b8',glow:'rgba(148,163,184,0.2)',label:'Cloudy' }, night:{ g1:'#0b111d',g2:'#141e2e',g3:'#1c2b40',accent:'#94a3b8',glow:'rgba(148,163,184,0.1)',label:'Cloudy' }, emoji:'☁️' },
   rainy:   { day:{ g1:'#1e3a4a',g2:'#284e64',g3:'#2e6278',accent:'#38bdf8',glow:'rgba(56,189,248,0.25)',label:'Rainy' },  night:{ g1:'#020917',g2:'#051828',g3:'#082238',accent:'#38bdf8',glow:'rgba(56,189,248,0.12)',label:'Rainy' },  emoji:'🌧️' },
   stormy:  { day:{ g1:'#1e1040',g2:'#2a1855',g3:'#352060',accent:'#a855f7',glow:'rgba(168,85,247,0.25)',label:'Stormy' }, night:{ g1:'#07000f',g2:'#0f001a',g3:'#180025',accent:'#a855f7',glow:'rgba(168,85,247,0.15)',label:'Stormy' }, emoji:'⛈️' },
   foggy:   { day:{ g1:'#4a4a50',g2:'#585860',g3:'#666670',accent:'#9ca3af',glow:'rgba(156,163,175,0.2)',label:'Foggy' },  night:{ g1:'#101010',g2:'#191920',g3:'#22222e',accent:'#9ca3af',glow:'rgba(156,163,175,0.1)',label:'Foggy' },  emoji:'🌫️' },
   windy:   { day:{ g1:'#0a2a4a',g2:'#103866',g3:'#164478',accent:'#67e8f9',glow:'rgba(103,232,249,0.25)',label:'Windy' }, night:{ g1:'#020d1e',g2:'#061828',g3:'#0a2235',accent:'#67e8f9',glow:'rgba(103,232,249,0.12)',label:'Windy' }, emoji:'💨' },
   humid:   { day:{ g1:'#0a3020',g2:'#104030',g3:'#185040',accent:'#34d399',glow:'rgba(52,211,153,0.25)',label:'Humid' },  night:{ g1:'#001510',g2:'#002218',g3:'#003020',accent:'#34d399',glow:'rgba(52,211,153,0.12)',label:'Humid' },  emoji:'🌿' },
-  clear:   { day:{ g1:'#0a2040',g2:'#163060',g3:'#1e3e7a',accent:'#60a5fa',glow:'rgba(96,165,250,0.25)',label:'Clear' },  night:{ g1:'#050d1a',g2:'#0d1f35',g3:'#152d4a',accent:'#60a5fa',glow:'rgba(96,165,250,0.12)',label:'Clear' },  emoji:'🌤️' },
+  clear: { day:{ g1:'#0a2040',g2:'#163060',g3:'#1e3e7a',accent:'#60a5fa',glow:'rgba(96,165,250,0.25)',label:'Clear' },  night:{ g1:'#050d1a',g2:'#0d1f35',g3:'#152d4a',accent:'#60a5fa',glow:'rgba(96,165,250,0.12)',label:'Clear' },  emoji:'🌤️' },
   default: { day:{ g1:'#0a2040',g2:'#163060',g3:'#1e3e7a',accent:'#60a5fa',glow:'rgba(96,165,250,0.25)',label:'Weather' },night:{ g1:'#050d1a',g2:'#0d1f35',g3:'#152d4a',accent:'#60a5fa',glow:'rgba(96,165,250,0.12)',label:'Weather' },emoji:'🌡️' },
 };
 
