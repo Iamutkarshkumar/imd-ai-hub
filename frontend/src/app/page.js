@@ -20,7 +20,7 @@ function isCurrentlyDay(sunriseStr = '06:00', sunsetStr = '18:30') {
 
 /* ─── Theme map ───────────────────────────────────────────────────────────── */
 const THEMES = {
-  sunny: { day:{ g1:'#0f0e00', g2:'#1e1c00', g3:'#2e2800',accent:'#f59e0b',glow:'rgba(245,158,11,0.2)',label:'Sunny' },   night:{ g1:'#1c0a00',g2:'#2e1800',g3:'#3d2800',accent:'#f59e0b',glow:'rgba(245,158,11,0.15)',label:'Sunny' },   emoji:'☀️' },
+  sunny: { day:{ g1:'#120d00', g2:'#241a00', g3:'#362600',accent:'#f59e0b',glow:'rgba(245,158,11,0.2)',label:'Sunny' },   night:{ g1:'#1c0a00',g2:'#2e1800',g3:'#3d2800',accent:'#f59e0b',glow:'rgba(245,158,11,0.15)',label:'Sunny' },   emoji:'☀️' },
   cloudy:  { day:{ g1:'#3a4a5c',g2:'#4e6070',g3:'#627888',accent:'#94a3b8',glow:'rgba(148,163,184,0.2)',label:'Cloudy' }, night:{ g1:'#0b111d',g2:'#141e2e',g3:'#1c2b40',accent:'#94a3b8',glow:'rgba(148,163,184,0.1)',label:'Cloudy' }, emoji:'☁️' },
   rainy:   { day:{ g1:'#1e3a4a',g2:'#284e64',g3:'#2e6278',accent:'#38bdf8',glow:'rgba(56,189,248,0.25)',label:'Rainy' },  night:{ g1:'#020917',g2:'#051828',g3:'#082238',accent:'#38bdf8',glow:'rgba(56,189,248,0.12)',label:'Rainy' },  emoji:'🌧️' },
   stormy:  { day:{ g1:'#1e1040',g2:'#2a1855',g3:'#352060',accent:'#a855f7',glow:'rgba(168,85,247,0.25)',label:'Stormy' }, night:{ g1:'#07000f',g2:'#0f001a',g3:'#180025',accent:'#a855f7',glow:'rgba(168,85,247,0.15)',label:'Stormy' }, emoji:'⛈️' },
