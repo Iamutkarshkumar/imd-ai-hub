@@ -64,6 +64,24 @@ function getTheme(condition = '', sunrise = '06:00', sunset = '18:30') {
   return { ...variant, key: matchedKey, emoji: themeData.emoji, isDay: day };
 }
 
+function getWeatherEmoji(condition = '', isDay = true) {
+  const c = condition.toLowerCase();
+  
+  // 1. Severe weather conditions
+  if (c.match(/thunder|storm/)) return '⛈️';
+  if (c.match(/rain|drizzle|shower/)) return '🌧️';
+  if (c.match(/snow|sleet|hail/)) return '❄️';
+  if (c.match(/wind|breeze/)) return '💨';
+  
+  // 2. Cloudy / Overcast / Haze conditions (Dynamic Day/Night shift)
+  if (c.match(/cloud|overcast|fog|mist|haze/)) {
+    return isDay ? '⛅' : '☁️'; // ⛅ for day, Moon + Cloud combo for night!
+  }
+  
+  // 3. Completely clear skies fallback
+  return isDay ? '☀️' : '🌙';
+}
+
 /* ─── Utility labels ──────────────────────────────────────────────────────── */
 const uvInfo  = u => u<=2?{l:'Low',c:'#4ade80'}:u<=5?{l:'Moderate',c:'#facc15'}:u<=7?{l:'High',c:'#fb923c'}:u<=10?{l:'Very High',c:'#f87171'}:{l:'Extreme',c:'#c084fc'};
 const aqiInfo = a => !a?{l:'N/A',c:'#64748b'}:a<=50?{l:'Good',c:'#4ade80'}:a<=100?{l:'Moderate',c:'#facc15'}:a<=150?{l:'Sensitive',c:'#fb923c'}:a<=200?{l:'Unhealthy',c:'#f87171'}:{l:'Hazardous',c:'#c084fc'};
@@ -657,7 +675,7 @@ export default function WeatherDashboard() {
         if(idx>=data.hourly.time.length) break;
         const d=new Date(data.hourly.time[idx]);
         let h=d.getHours(); const ampm=h>=12?'PM':'AM'; h=h%12||12;
-        newHourly.push({hour:i===0?'Now':`${h}${ampm}`,temp:Math.round(data.hourly.temperature_2m[idx]),pop:data.hourly.precipitation_probability[idx]||0,icon:getWMO(data.hourly.weather_code[idx]).i});
+        newHourly.push({hour:i===0?'Now':`${h}${ampm}`,temp:Math.round(data.hourly.temperature_2m[idx]),pop:data.hourly.precipitation_probability[idx]||0,icon: getWeatherEmoji(getWMO(data.hourly.weather_code[idx]).n, d.getHours() >= 6 && d.getHours() < 18)});
       }
       const daysArr=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
       const newWeekly=[];
@@ -842,7 +860,7 @@ export default function WeatherDashboard() {
                         animation:`slideRight 0.25s ${Math.min(i,15)*0.04}s both`}}>
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                         <div style={{fontWeight:600,fontSize:13,fontFamily:"'Syne',sans-serif"}}>{city.city}</div>
-                        <div style={{fontSize:17}}>{ct.emoji}</div>
+                        <div style={{fontSize:17}}>{getWeatherEmoji(city.condition, ct.isDay)}</div>
                       </div>
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:5}}>
                         <div style={{fontSize:20,fontWeight:800,fontFamily:"'Syne',sans-serif",color:isActive?ct.accent:'#fff'}}>
@@ -909,7 +927,8 @@ export default function WeatherDashboard() {
                               borderLeft:`3px solid ${isActive?ct.accent:'rgba(255,255,255,0.08)'}`}}>
                             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                               <div style={{fontWeight:600,fontSize:12,fontFamily:"'Syne',sans-serif"}}>{city.city}</div>
-                              <div style={{fontSize:15}}>{ct.emoji}</div>
+                              {/* Fixed: Replaced ct.emoji with getWeatherEmoji helper */}
+                              <div style={{fontSize:15}}>{getWeatherEmoji(city.condition, ct.isDay)}</div>
                             </div>
                             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:3}}>
                               <div style={{fontSize:17,fontWeight:800,fontFamily:"'Syne',sans-serif",color:isActive?ct.accent:'#fff'}}>
@@ -953,7 +972,7 @@ export default function WeatherDashboard() {
                       {unit==='C'?selected.temperature:toF(selected.temperature)}
                     </div>
                     <div style={{paddingBottom:14}}><div style={{fontFamily:"'Syne',sans-serif",fontSize:32,color:'rgba(255,255,255,0.5)',fontWeight:400}}>°{unit}</div></div>
-                    <div style={{paddingBottom:12,fontSize:54}}>{theme.emoji}</div>
+                    <div style={{paddingBottom:12,fontSize:54}}>{getWeatherEmoji(selected.condition, isDay)}</div>
                   </div>
                   <div style={{fontFamily:"'Syne',sans-serif",fontSize:20,color:'rgba(255,255,255,0.65)',marginTop:4,fontWeight:500}}>{selected.condition}</div>
                   <div style={{display:'flex',gap:16,marginTop:8,fontSize:13,color:'rgba(255,255,255,0.4)'}}>
@@ -1162,12 +1181,17 @@ function enrichCity(d) {
 }
 
 function generateHourly(base, condition) {
-  const c=(condition||'').toLowerCase();
-  const icon=c.includes('rain')?'🌧️':c.includes('cloud')?'☁️':c.includes('storm')?'⛈️':c.includes('humid')?'🌿':'☀️';
   const hrs=['6AM','8AM','10AM','12PM','2PM','4PM','6PM','8PM','10PM'];
   const offs=[-5,-3,0,4,5,4,2,-1,-3];
-  const pops=c.includes('rain')?[20,30,50,65,70,60,45,35,25]:c.includes('cloud')?[5,5,10,15,20,15,10,5,5]:[2,2,3,5,3,3,2,2,2];
-  return hrs.map((hour,i)=>({hour,temp:base+offs[i],icon,pop:pops[i]}));
+  const pops=(condition||'').toLowerCase().includes('rain')?[20,30,50,65,70,60,45,35,25]:(condition||'').toLowerCase().includes('cloud')?[5,5,10,15,20,15,10,5,5]:[2,2,3,5,3,3,2,2,2];
+  
+  return hrs.map((hour,i)=>{
+    const hNum = parseInt(hour);
+    const isPM = hour.includes('PM');
+    const h24 = isPM ? (hNum === 12 ? 12 : hNum + 12) : (hNum === 12 ? 0 : hNum);
+    const isHourDay = h24 >= 6 && h24 < 18;
+    return { hour, temp: base+offs[i], icon: getWeatherEmoji(condition, isHourDay), pop: pops[i] };
+  });
 }
 
 function generateWeekly(base, condition) {
