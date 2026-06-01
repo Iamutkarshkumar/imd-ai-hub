@@ -1401,7 +1401,10 @@ function getWeatherIcon(condition = '', isDay = true, size = 32) {
 /* ─── Moon phase icon (Colored with Hover Tooltip) ───────────────────────── */
 function getMoonPhaseIcon(size = 28) {
   const moonColor = "#93c5fd"; // Matching soft silver-blue from our palette
-  const d = Math.floor((Date.now() / 86400000 - 10) % 29.53);
+  // Calculate raw decimal age to get high-accuracy illumination percentages
+  const rawAge = ((Date.now() / 86400000 - 10) % 29.53 + 29.53) % 29.53;
+  const d = Math.floor(rawAge);
+  const illumination = Math.round((1 - Math.cos((rawAge / 29.53) * 2 * Math.PI)) / 2 * 100);
   
   // Determine text label for hover tooltip based on phase calculation
   let phaseName = "Moon Phase";
@@ -1414,8 +1417,11 @@ function getMoonPhaseIcon(size = 28) {
   else if (d < 25) phaseName = "Third Quarter Moon";
   else             phaseName = "Waning Crescent";
 
+  // Create the combined tooltip text string
+  const tooltipText = `${phaseName} (${illumination}% Illumination)`;
+
   // Base props configuration
-  const p = { size, color: moonColor, title: phaseName };
+  const p = { size, color: moonColor, title: tooltipText };
 
   if (d < 2)   return <WiMoonNew {...p} />;
   if (d < 6)   return <WiMoonWaxingCrescent3 {...p} />;
@@ -2599,3 +2605,5 @@ function generateDemoData() {
     {city:'Jaipur',    state:'Rajasthan',   temperature:40,feels_like:43,high:44,low:32,condition:'Sunny',         humidity:20,warning:'None',           wind_speed:20,wind_dir:'SW',wind_deg:220,wind_gust:28,pressure:1004,visibility:7, uv_index:10,aqi:95, cloud_cover:5,  sunrise:'05:40',sunset:'19:05',lat:26.91,lon:75.79},
   ].map(enrichCity);
 }
+
+
