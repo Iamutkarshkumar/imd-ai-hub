@@ -1673,8 +1673,8 @@ function HourlyForecast({ data, accent }) {
   if (!data?.length) return null;
   const max=Math.max(...data.map(d=>d.temp)), min=Math.min(...data.map(d=>d.temp));
   return (
-    <div style={{overflowX:'auto',paddingBottom:6}}>
-      <div style={{display:'flex',gap:10,minWidth:'max-content'}}>
+    <div style={{paddingBottom:6}}>
+      <div style={{display:'grid',gridTemplateColumns:`repeat(${data.length},1fr)`,gap:10}}>
         {data.map((h,i)=>{
           const pct=max===min?50:((h.temp-min)/(max-min))*100;
           return (
@@ -2051,7 +2051,7 @@ export default function WeatherDashboard() {
           high:Math.round(data.daily.temperature_2m_max[i]),
           low:Math.round(data.daily.temperature_2m_min[i]),
           condition:wmo.n,
-          icon:<wmo.Icon size={26} color="rgba(255,255,255,0.85)"/>,
+          icon: getWeatherIcon(wmo.n, true, 26),
         });
       }
       setExtended({hourly:newHourly,weekly:newWeekly});
@@ -2343,7 +2343,19 @@ export default function WeatherDashboard() {
                   {selected.warning&&selected.warning!=='None'&&(
                     <div style={{background:'rgba(220,38,38,0.12)',border:'1px solid rgba(220,38,38,0.35)',borderRadius:14,padding:'12px 16px',maxWidth:190,backdropFilter:'blur(10px)'}}>
                       <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
-                        <WiThunderstorm size={20} color="#fca5a5"/>
+                        {(w=>{
+                          const c=selected.warning.toLowerCase();
+                          if(c.match(/heat|hot|temperature/))   return <WiHot size={20} color="#f87171"/>;
+                          if(c.match(/cold|frost|freeze/))      return <WiSnow size={20} color="#93c5fd"/>;
+                          if(c.match(/rain|flood|shower/))      return <WiRain size={20} color="#38bdf8"/>;
+                          if(c.match(/thunder|lightning/))      return <WiThunderstorm size={20} color="#c084fc"/>;
+                          if(c.match(/wind|gale|cyclone/))      return <WiStrongWind size={20} color="#67e8f9"/>;
+                          if(c.match(/fog|mist|visibility/))    return <WiFog size={20} color="#94a3b8"/>;
+                          if(c.match(/snow|hail|sleet/))        return <WiHail size={20} color="#bae6fd"/>;
+                          if(c.match(/aqi|air|pollution|smog|smoke/))  return <WiDust size={20} color="#d97706"/>;
+                          if(c.match(/storm|hurricane|typhoon/))return <WiStormShowers size={20} color="#c084fc"/>;
+                          return <WiThunderstorm size={20} color="#fca5a5"/>;
+                        })(selected.warning)}
                         <span style={{fontWeight:700,fontSize:11,color:'#fca5a5',letterSpacing:'0.06em',textTransform:'uppercase'}}>Active Alert</span>
                       </div>
                       <div style={{fontSize:11,color:'rgba(255,255,255,0.55)',lineHeight:1.5}}>{selected.warning}</div>
