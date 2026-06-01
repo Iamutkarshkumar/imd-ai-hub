@@ -1257,7 +1257,7 @@ import {
 } from 'recharts';
 import {
   WiDaySunny, WiNightClear, WiHot,
-  WiDayCloudy, WiNightAltCloudy, WiDayCloudyHigh, WiDaySunnyOvercast,
+  WiDayCloudy, WiNightAltCloudy, WiDayCloudyHigh,WiNightAltCloudyHigh,WiDaySunnyOvercast,
   WiCloudy, WiFog, WiDayFog, WiNightFog,
   WiRain, WiDayRain, WiShowers, WiSprinkle, WiRainWind,
   WiThunderstorm, WiDayThunderstorm, WiStormShowers, WiLightning,
@@ -1374,7 +1374,7 @@ function getWeatherIcon(condition = '', isDay = true, size = 32) {
   
   // Mixed conditions
   if (c.match(/partly|mostly/))          return isDay ? <WiDayCloudy {...p} color="#fde047" /> : <WiNightAltCloudy {...p} color={colors.moon} />;
-  if (c.match(/cloud/))                  return isDay ? <WiDayCloudyHigh {...p} color={colors.cloud} /> : <WiNightAltCloudy {...p} color={colors.moon} />;
+  if (c.match(/cloud/))                  return isDay ? <WiDayCloudyHigh {...p} color={colors.cloud} /> : <WiNightAltCloudyHigh {...p} color={colors.moon} />;
   
   // Temperature extremes
   if (c.match(/hot/))                    return <WiHot {...p} color={colors.hot} />;
