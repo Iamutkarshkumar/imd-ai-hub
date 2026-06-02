@@ -924,6 +924,10 @@ groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 # ═══════════════════════════════════════════════════════════════════════════
 
 from datetime import datetime, timezone, timedelta
+import math
+# Add these two lines back in!
+_KNOWN_NEW_MOON_TS = datetime(2024, 1, 11, 11, 57, 0, tzinfo=timezone.utc).timestamp()
+_SYNODIC_MONTH     = 29.530588
 
 def get_lunar_data() -> dict:
     """
