@@ -1398,38 +1398,43 @@ function getWeatherIcon(condition = '', isDay = true, size = 32) {
 //   return <WiMoonWaningCrescent3 {...p} />;
 // }
 
-/* ─── Moon phase icon (Colored with Hover Tooltip) ───────────────────────── */
+/* ─── Moon phase icon (Colored with Hover & High Precision Illumination) ─── */
 function getMoonPhaseIcon(size = 28) {
-  const moonColor = "#93c5fd"; // Matching soft silver-blue from our palette
-  // Calculate raw decimal age to get high-accuracy illumination percentages
-  const rawAge = ((Date.now() / 86400000 - 10) % 29.53 + 29.53) % 29.53;
-  const d = Math.floor(rawAge);
-  const illumination = Math.round((1 - Math.cos((rawAge / 29.53) * 2 * Math.PI)) / 2 * 100);
+  const moonColor = "#93c5fd"; 
   
-  // Determine text label for hover tooltip based on phase calculation
+  // Use a precise, known recent New Moon epoch to prevent calendar drift
+  // Jan 11, 2024 at 11:57 UTC was exactly a New Moon
+  const knownNewMoon = new Date('2024-01-11T11:57:00Z').getTime();
+  const lunarDays = (Date.now() - knownNewMoon) / 86400000;
+  
+  // 29.530588 is the exact synodic month length
+  const rawAge = lunarDays % 29.530588; 
+  
+  // Calculate illumination percentage based on accurate phase angle
+  const illumination = Math.round((1 - Math.cos((rawAge / 29.530588) * 2 * Math.PI)) / 2 * 100);
+  
+  // Refined phase boundaries using precise decimal age, not floored integers
   let phaseName = "Moon Phase";
-  if (d < 2)       phaseName = "New Moon";
-  else if (d < 6)  phaseName = "Waxing Crescent";
-  else if (d < 10) phaseName = "First Quarter Moon";
-  else if (d < 14) phaseName = "Waxing Gibbous";
-  else if (d < 17) phaseName = "Full Moon";
-  else if (d < 21) phaseName = "Waning Gibbous";
-  else if (d < 25) phaseName = "Third Quarter Moon";
-  else             phaseName = "Waning Crescent";
+  if (rawAge < 1.0 || rawAge >= 28.5) phaseName = "New Moon";
+  else if (rawAge < 6.3)  phaseName = "Waxing Crescent";
+  else if (rawAge < 8.3)  phaseName = "First Quarter Moon";
+  else if (rawAge < 13.8) phaseName = "Waxing Gibbous";
+  else if (rawAge < 15.8) phaseName = "Full Moon";
+  else if (rawAge < 21.1) phaseName = "Waning Gibbous";
+  else if (rawAge < 23.1) phaseName = "Third Quarter Moon";
+  else                    phaseName = "Waning Crescent";
 
-  // Create the combined tooltip text string
   const tooltipText = `${phaseName} (${illumination}% Illumination)`;
-
-  // Base props configuration
   const p = { size, color: moonColor, title: tooltipText };
 
-  if (d < 2)   return <WiMoonNew {...p} />;
-  if (d < 6)   return <WiMoonWaxingCrescent3 {...p} />;
-  if (d < 10)  return <WiMoonFirstQuarter {...p} />;
-  if (d < 14)  return <WiMoonWaxingGibbous3 {...p} />;
-  if (d < 17)  return <WiMoonFull {...p} />;
-  if (d < 21)  return <WiMoonWaningGibbous3 {...p} />;
-  if (d < 25)  return <WiMoonThirdQuarter {...p} />;
+  // Match icon to the exact same decimal boundaries
+  if (rawAge < 1.0 || rawAge >= 28.5) return <WiMoonNew {...p} />;
+  if (rawAge < 6.3)  return <WiMoonWaxingCrescent3 {...p} />;
+  if (rawAge < 8.3)  return <WiMoonFirstQuarter {...p} />;
+  if (rawAge < 13.8) return <WiMoonWaxingGibbous3 {...p} />;
+  if (rawAge < 15.8) return <WiMoonFull {...p} />;
+  if (rawAge < 21.1) return <WiMoonWaningGibbous3 {...p} />;
+  if (rawAge < 23.1) return <WiMoonThirdQuarter {...p} />;
   return <WiMoonWaningCrescent3 {...p} />;
 }
 
