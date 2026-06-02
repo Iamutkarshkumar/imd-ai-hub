@@ -923,24 +923,21 @@ groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 # LUNAR PHASE ENGINE
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Known New Moon epoch: Jan 11, 2024 at 11:57 UTC (matches the frontend)
-_KNOWN_NEW_MOON_TS = datetime(2024, 1, 11, 11, 57, 0, tzinfo=timezone.utc).timestamp()
-_SYNODIC_MONTH    = 29.530588  # days — exact synodic month length
+from datetime import datetime, timezone, timedelta
 
 def get_lunar_data() -> dict:
     """
-    Compute current lunar phase, illumination, age, and related info.
-    Uses the same epoch as getMoonPhaseIcon() in the frontend so data
-    is always in sync with the UI.
+    Compute current lunar phase, illumination, age, and explicit past/future target dates.
     """
-    now_ts   = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(timezone.utc)
+    now_ts = now.timestamp()
     age_days = ((now_ts - _KNOWN_NEW_MOON_TS) / 86400.0) % _SYNODIC_MONTH
 
     # Illumination — (1 - cos(phase_angle)) / 2
-    phase_angle  = (age_days / _SYNODIC_MONTH) * 2 * math.pi
+    phase_angle = (age_days / _SYNODIC_MONTH) * 2 * math.pi
     illumination = round((1 - math.cos(phase_angle)) / 2 * 100, 1)
 
-    # Phase name (same boundaries as frontend)
+    # Phase name 
     if   age_days < 1.0 or age_days >= 28.5: phase_name = "New Moon"
     elif age_days < 6.3:                      phase_name = "Waxing Crescent"
     elif age_days < 8.3:                      phase_name = "First Quarter"
@@ -950,24 +947,29 @@ def get_lunar_data() -> dict:
     elif age_days < 23.1:                     phase_name = "Third Quarter"
     else:                                     phase_name = "Waning Crescent"
 
-    # Is it waxing (brightness increasing) or waning?
-    waxing = age_days < 14.765
+    waxing = age_days < (_SYNODIC_MONTH / 2)
 
-    # Days until next Full Moon and next New Moon
-    days_to_full = (_SYNODIC_MONTH / 2 - age_days) % _SYNODIC_MONTH
-    days_to_new  = (_SYNODIC_MONTH   - age_days)   % _SYNODIC_MONTH
-    days_to_full = round(days_to_full, 1)
-    days_to_new  = round(days_to_new,  1)
+    # ─── EXACT CALENDAR MATH FOR LLM ───
+    # Calculate intervals
+    days_to_next_full = (_SYNODIC_MONTH / 2 - age_days) % _SYNODIC_MONTH
+    days_to_next_new  = (_SYNODIC_MONTH - age_days) % _SYNODIC_MONTH
 
-    # Moonrise/moonset rough estimate (shifts ~50 min later each day)
-    # New Moon rises ~6 AM; each day adds ~50 min
-    base_rise_min = 6 * 60  # 06:00 IST at New Moon
+    # Convert intervals to absolute UTC datetimes
+    next_full_dt = now + timedelta(days=days_to_next_full)
+    next_new_dt  = now + timedelta(days=days_to_next_new)
+    
+    # Subtract a full synodic month from the next dates to get the exact past dates
+    last_full_dt = next_full_dt - timedelta(days=_SYNODIC_MONTH)
+    last_new_dt  = next_new_dt - timedelta(days=_SYNODIC_MONTH)
+
+    # Moonrise/moonset rough estimate
+    base_rise_min = 6 * 60
     moonrise_min  = int((base_rise_min + age_days * 50) % (24 * 60))
-    moonset_min   = int((moonrise_min + 12 * 60 + 25) % (24 * 60))  # ~12h25m arc
+    moonset_min   = int((moonrise_min + 12 * 60 + 25) % (24 * 60))
     moonrise_str  = f"{moonrise_min // 60:02d}:{moonrise_min % 60:02d} IST"
-    moonset_str   = f"{moonset_min  // 60:02d}:{moonset_min  % 60:02d} IST"
+    moonset_str   = f"{moonset_min   // 60:02d}:{moonset_min   % 60:02d} IST"
 
-    # Tidal tendency (spring = Full/New Moon, neap = Quarter phases)
+    # Notes setups
     if illumination >= 90 or illumination <= 10:
         tidal_note = "Spring tides likely (strong high/low tides near coasts)"
     elif 40 <= illumination <= 60:
@@ -975,7 +977,6 @@ def get_lunar_data() -> dict:
     else:
         tidal_note = "Moderate tidal conditions"
 
-    # Visibility note — how bright the Moon is in the night sky
     if illumination >= 85:
         sky_note = "Very bright moon tonight — may wash out faint stars and aurora"
     elif illumination >= 50:
@@ -985,7 +986,6 @@ def get_lunar_data() -> dict:
     else:
         sky_note = "Partly lit moon — decent for both stargazing and navigation"
 
-    # Folklore / agricultural notes keyed to phase
     folklore = {
         "New Moon":        "Traditional planting time for above-ground crops in many Indian agricultural traditions.",
         "Waxing Crescent": "Growing phase — auspicious for starting new ventures in some traditions.",
@@ -998,34 +998,39 @@ def get_lunar_data() -> dict:
     }
 
     return {
-        "phase_name":       phase_name,
-        "age_days":         round(age_days, 2),
-        "illumination_pct": illumination,
-        "is_waxing":        waxing,
-        "days_to_full_moon":days_to_full,
-        "days_to_new_moon": days_to_new,
-        "moonrise_approx":  moonrise_str,
-        "moonset_approx":   moonset_str,
-        "tidal_note":       tidal_note,
-        "sky_visibility":   sky_note,
-        "cultural_note":    folklore.get(phase_name, ""),
+        "phase_name":        phase_name,
+        "age_days":          round(age_days, 2),
+        "illumination_pct":  illumination,
+        "is_waxing":         waxing,
+        "moonrise_approx":   moonrise_str,
+        "moonset_approx":    moonset_str,
+        "tidal_note":        tidal_note,
+        "sky_visibility":    sky_note,
+        "cultural_note":     folklore.get(phase_name, ""),
+        # Direct string dates formatted cleanly for the chatbot context
+        "last_full_moon":    last_full_dt.strftime("%d %b %Y"),
+        "next_full_moon":    next_full_dt.strftime("%d %b %Y"),
+        "last_new_moon":     last_new_dt.strftime("%d %b %Y"),
+        "next_new_moon":     next_new_dt.strftime("%d %b %Y"),
     }
 
 
 def lunar_context_block() -> str:
     """
-    Returns a compact, LLM-friendly string block that is injected into
-    every chat prompt so the AI can answer lunar/tidal/sky questions.
+    Returns an explicitly dated, LLM-friendly string block.
     """
     d = get_lunar_data()
     direction = "waxing (brightening)" if d["is_waxing"] else "waning (dimming)"
     lines = [
         "=== LUNAR DATA (current) ===",
-        f"Phase       : {d['phase_name']} ({direction})",
-        f"Age         : {d['age_days']} days into the {_SYNODIC_MONTH:.2f}-day cycle",
-        f"Illumination: {d['illumination_pct']}%",
-        f"Next Full Moon in: {d['days_to_full_moon']} days",
-        f"Next New Moon in : {d['days_to_new_moon']} days",
+        f"Current Date/Time: {datetime.now().strftime('%d %b %Y %H:%M Local')}",
+        f"Phase            : {d['phase_name']} ({direction})",
+        f"Age              : {d['age_days']} days into the {_SYNODIC_MONTH:.2f}-day cycle",
+        f"Illumination     : {d['illumination_pct']}%",
+        f"LAST Full Moon   : {d['last_full_moon']}",
+        f"NEXT Full Moon   : {d['next_full_moon']}",
+        f"LAST New Moon    : {d['last_new_moon']}",
+        f"NEXT New Moon    : {d['next_new_moon']}",
         f"Moonrise (approx): {d['moonrise_approx']}",
         f"Moonset  (approx): {d['moonset_approx']}",
         f"Tidal tendency   : {d['tidal_note']}",
