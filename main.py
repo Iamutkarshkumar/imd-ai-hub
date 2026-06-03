@@ -1899,24 +1899,31 @@ async def ask_llm_async(prompt: str, user_text: str = "") -> str:
     if "ROUTE_TO_GEMINI" in reply:
         print(f"🔄 Routing to Gemini for: '{user_text}'")
 
+        # Added explicit instruction for Indian context
         gemini_prompt = (
-            "You are an expert meteorologist and astronomer assisting users on a weather dashboard. "
+            "You are an expert meteorologist, astronomer, and geographer assisting users on an Indian weather dashboard. "
+            "CRITICAL INSTRUCTION: Always answer within an Indian context (e.g., if asked about states, farming, geography,etc assume India) "
+            "UNLESS the user explicitly specifies another country. "
             "Answer the following question accurately and concisely (2-4 sentences max):\n\n"
             f"Question: {user_text}"
         )
 
-        # google-genai SDK is synchronous — run in executor to stay async-friendly
-        gemini_response = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=gemini_prompt,
+        # Wrap Gemini in a try/except to handle 503 overload errors gracefully
+        try:
+            # google-genai SDK is synchronous — run in executor to stay async-friendly
+            gemini_response = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=gemini_prompt,
+                )
             )
-        )
-        return gemini_response.text.strip()
+            return gemini_response.text.strip()
+        except Exception as gemini_error:
+            print(f"❌ Gemini API error: {gemini_error}")
+            return "My general knowledge database is currently experiencing high demand! Please try asking me again in a few minutes, or ask me a live weather question right now."
 
     return reply
-
 
 def clean_response(text: str) -> str:
     text  = text.strip()
