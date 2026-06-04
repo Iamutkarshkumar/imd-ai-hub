@@ -10,6 +10,7 @@ is_thunderstorm, is_snowfall, is_foggy, condition_detail.
 import os
 import requests
 import logging
+import time
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -318,6 +319,7 @@ def update_weather():
                                 success=False, records_updated=0,
                                 error_message="All sources failed"))
                 db.commit()
+                time.sleep(1.0)
                 continue
 
             record = db.query(WeatherRecord).filter_by(city=data["city"]).first()
@@ -351,6 +353,7 @@ def update_weather():
             db.add(FetchLog(source=source, city=data["city"],
                             success=True, records_updated=1))
             db.commit()
+            time.sleep(1.0)
 
     except Exception as e:
         db.rollback()
