@@ -28,6 +28,7 @@
 ![IMD](https://img.shields.io/badge/IMD-Official_API-FF6B35?style=flat-square)
 ![Vercel](https://img.shields.io/badge/Frontend-Vercel-000000?style=flat-square&logo=vercel)
 ![Render](https://img.shields.io/badge/Backend-Render-46E3B7?style=flat-square&logo=render)
+[![Uptime](https://img.shields.io/badge/Uptime-Monitored%20by%20Pulsetic-blue?style=for-the-badge)](https://pulsetic.com)
 
 <br/>
 
@@ -157,18 +158,18 @@ The AI backend uses a **two-stage intelligent routing system** to balance speed,
 │  current_wx · aws_data    │   │  uv_index · aqi · visibility │
 │  cityforecastloc (7-day)  │   │  automatic fallback only     │
 │  districtwarning          │   │  Free · 66 cities · 30 min   │
-└───────────┬───────────────┘   └───────────────┬──────────────┘
-            │         merge per-city, IMD first           │
-            └───────────────────┬─────────────────────────┘
-                                 ▼
-                    ┌────────────────────────┐
+└───────────┬───────────────┘   └──────────────────┬───────────┘
+            │         merge per-city, IMD first    │
+            └───────────────────┬──────────────────┘
+                                │                                
+                    ┌───────────▼────────────┐
                     │   Neon PostgreSQL      │
                     │  weather_records       │
                     │  fetch_logs            │
                     └────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  UptimeRobot — pings /health every 5 min · keeps Render awake│
+│  Pulsetic — pings /health every 5 min · keeps Render awake│
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -248,7 +249,7 @@ imd-ai-hub/
 | **Groq API** | Llama 3.1 inference (primary AI) | Free |
 | **Google Gemini API** | Gemini 2.5 Flash (fallback AI) | Free tier |
 | **Open-Meteo** | Live weather data — fills IMD gaps + fallback | Free |
-| **UptimeRobot** | Keep Render awake | Free |
+| **Pulsetic** | Uptime monitoring & keep Render awake | Free |
 
 > **Total infrastructure cost: ₹0 / month**
 
@@ -342,7 +343,7 @@ Base URL (production): `https://imd-backend2.onrender.com`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/` | Health ping (used by UptimeRobot) |
+| `GET` | `/` | Health ping (used by Pulsetic) |
 | `GET` | `/health` | Full status — DB, city count, RAG, lunar phase |
 | `GET` | `/weather-stats` | All 66 cities current weather |
 | `GET` | `/search?q=Kerala` | Search by city or state name |
@@ -410,8 +411,8 @@ Ollama requires 4GB+ RAM for Llama 3.1. Render free tier has 512MB. Groq runs th
 ### Why the background updater runs inside FastAPI?
 Running `imd_live_updater.py` as a separate Render service costs an extra instance. Running it as an `asyncio` background task inside the FastAPI lifespan uses the same container — zero additional cost.
 
-### UptimeRobot
-Render free tier spins down after 15 minutes of inactivity. UptimeRobot pings the backend every 5 minutes, keeping it awake 24/7. The root endpoint supports both `GET` and `HEAD` — UptimeRobot sends `HEAD` by default.
+### Pulsetic
+Render free tier spins down after periods of inactivity. Pulsetic continuously monitors the backend and sends periodic health checks to `/health`, helping keep the service responsive while also providing uptime statistics and outage notifications.
 
 ---
 
