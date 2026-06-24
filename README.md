@@ -28,7 +28,7 @@
 ![IMD](https://img.shields.io/badge/IMD-Official_API-FF6B35?style=flat-square)
 ![Vercel](https://img.shields.io/badge/Frontend-Vercel-000000?style=flat-square&logo=vercel)
 ![Render](https://img.shields.io/badge/Backend-Render-46E3B7?style=flat-square&logo=render)
-[![Uptime](https://img.shields.io/badge/Uptime-Monitored%20by%20Pulsetic-blue?style=for-the-badge)](https://pulsetic.com)
+![Pulsetic](https://img.shields.io/badge/Monitoring-Pulsetic-blue?style=flat-square)
 
 <br/>
 
