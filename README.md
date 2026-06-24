@@ -25,12 +25,13 @@
 ![Python](https://img.shields.io/badge/Python_3.12-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Groq](https://img.shields.io/badge/Groq-Llama_3.1-F55036?style=flat-square)
 ![Gemini](https://img.shields.io/badge/Google-Gemini_2.5_Flash-4285F4?style=flat-square&logo=google&logoColor=white)
+![IMD](https://img.shields.io/badge/IMD-Official_API-FF6B35?style=flat-square)
 ![Vercel](https://img.shields.io/badge/Frontend-Vercel-000000?style=flat-square&logo=vercel)
 ![Render](https://img.shields.io/badge/Backend-Render-46E3B7?style=flat-square&logo=render)
 
 <br/>
 
-**66 Cities · 31 States · Live Data Every 30 Minutes · Dual-LLM AI Chat · Voice Input · Always Online**
+**66 Cities · 31 States · Hybrid IMD + Open-Meteo Live Data Every 30 Minutes · Dual-LLM AI Chat · Voice Input · Always Online**
 
 </div>
 
@@ -55,10 +56,15 @@
 
 ## ✨ Features
 
-### 🌦 Live Weather — 66 Indian Cities
-- Data refreshed every **30 minutes automatically** via cloud cron (no manual intervention)
+### 🌦 Live Weather — 66 Indian Cities (Hybrid IMD + Open-Meteo)
+- **Official IMD data is now the primary source** — current conditions for 46 cities come straight from IMD's `current_wx` Synop network, with the remaining 10 cities (no Synop station) served by IMD's `aws_data` AWS network.
+- **Open-Meteo fills every gap** IMD doesn't cover: UV index, AQI, and visibility — plus it acts as a silent, automatic fallback whenever IMD data for a city is missing, null, or older than 3 hours.
+- Data refreshed every **30 minutes automatically** via an `asyncio` background task — only **4 bulk HTTP calls** to IMD per cycle (`current_wx`, `aws_data`, `cityforecastloc`, `districtwarning`) cover all 66 cities, plus a parallelized Open-Meteo sweep (rate-limited to 5 concurrent requests).
+- Auto-refreshing JWT authentication against IMD's OAuth endpoint — token is renewed automatically ~5 minutes before expiry.
 - Covers **31 states** from Leh (Ladakh) to Thiruvananthapuram (Kerala)
-- Fields per city: temperature, feels like, high/low, humidity, wind speed/direction/gusts, UV index, AQI, precipitation, cloud cover, pressure, visibility, sunrise/sunset
+- Fields per city: temperature, feels like, high/low, humidity, wind speed/direction/gusts, UV index, AQI, precipitation, cloud cover, pressure, visibility, sunrise/sunset, moonrise/moonset
+- **Official IMD red/orange district alerts**, decoded from raw warning codes into plain-English text (e.g. *"Orange Alert: Thunderstorm & Lightning, Strong Winds"*)
+- Per-city **data provenance tracking** (`data_source`: `imd_synop` / `imd_aws` / `open_meteo`) logged on every fetch for transparency and debugging
 - **Day/Night themes** — background and colours change based on each city's actual sunrise/sunset times
 - **Condition atmosphere** — animated rain drops, drifting clouds, or floating particles depending on weather
 
@@ -97,12 +103,12 @@ The AI backend uses a **two-stage intelligent routing system** to balance speed,
 
 ### ⚠️ Alert System
 - Scrolling ticker for all active warnings across 66 cities
-- Auto-generated alerts: Heatwave, Thunderstorm Warning, Hazardous AQI, Heat Advisory
+- **Official IMD district warnings** (Red/Orange alerts) decoded into plain English, alongside auto-generated alerts: Heatwave, Thunderstorm Warning, Hazardous AQI, Heat Advisory
 - Red badge on city cards with active warnings
 
 ### 📅 Real Forecast Data
+- **7-day weekly forecast** — all 7 days sourced directly from IMD's `cityforecastloc` (forecast text + high/low temps)
 - **24-hour hourly** pulled live from Open-Meteo per city on demand
-- **7-day weekly** with precipitation probability chart
 - Both update automatically when you switch cities
 
 ---
@@ -141,14 +147,25 @@ The AI backend uses a **two-stage intelligent routing system** to balance speed,
 │  ┌────────▼─────────────────────────────────────────────┐    │
 │  │   Background Task (asyncio lifespan)                 │    │
 │  │   update_weather() — runs every 30 min               │    │
+│  │   Hybrid fetch: IMD primary → Open-Meteo fallback    │    │
 │  └────────┬─────────────────────────────────────────────┘    │
 └───────────┼──────────────────────────────────────────────────┘
             │
-┌───────────▼────────────┐    ┌─────────────────────────────┐
-│    Neon PostgreSQL     │    │      Open-Meteo API         │
-│  weather_records       │◄───│  Weather + Air Quality      │
-│  fetch_logs            │    │  Free · 66 cities · 30 min  │
-└────────────────────────┘    └─────────────────────────────┘
+┌───────────▼───────────────┐   ┌──────────────────────────────┐
+│  IMD Official API         │   │      Open-Meteo API          │
+│  (JWT auth, 4 bulk calls) │   │  Weather + Air Quality       │
+│  current_wx · aws_data    │   │  uv_index · aqi · visibility │
+│  cityforecastloc (7-day)  │   │  automatic fallback only     │
+│  districtwarning          │   │  Free · 66 cities · 30 min   │
+└───────────┬───────────────┘   └───────────────┬──────────────┘
+            │         merge per-city, IMD first           │
+            └───────────────────┬─────────────────────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │   Neon PostgreSQL      │
+                    │  weather_records       │
+                    │  fetch_logs            │
+                    └────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
 │  UptimeRobot — pings /health every 5 min · keeps Render awake│
@@ -163,9 +180,9 @@ The AI backend uses a **two-stage intelligent routing system** to balance speed,
 imd-ai-hub/
 │
 ├── 🐍 main.py                  # FastAPI — endpoints + dual-LLM router + background updater
-├── 🐍 database.py              # SQLAlchemy models (WeatherRecord, FetchLog)
+├── 🐍 database.py              # SQLAlchemy models (WeatherRecord, FetchLog) — v3 hybrid schema
 ├── 🐍 setup_db.py              # One-time DB migration + CSV seeding
-├── 🐍 imd_live_updater.py      # Weather fetch logic (called by main.py lifespan)
+├── 🐍 imd_live_updater.py      # Hybrid IMD + Open-Meteo fetch logic (called by main.py lifespan)
 ├── 🐍 vector_store.py          # Keyword-based RAG with IMD bulletin matching
 ├── 🐍 ingest_bulletins.py      # Bulletin ingestion (local dev only)
 ├── 🐍 data_chat.py             # CLI chat interface for local testing
@@ -194,19 +211,22 @@ imd-ai-hub/
 |---|---|
 | **FastAPI 0.115** | Async REST API, 11 endpoints |
 | **SQLAlchemy 2.0** | ORM for Neon PostgreSQL |
+| **IMD Official API** | Primary live data — Synop stations, AWS stations, forecasts, district alerts (JWT auth) |
+| **Open-Meteo** | UV index, AQI, visibility, and automatic fallback when IMD data is stale/missing |
 | **Groq API + Llama 3.1 8B** | Primary AI — fast dashboard queries (~2s) |
 | **Google Gemini 2.5 Flash** | Fallback AI — general meteorology & knowledge |
 | **Dual-LLM Router** | Llama handles live data; auto-escalates to Gemini when needed |
 | **Keyword RAG** | Lightweight IMD bulletin matching, zero RAM overhead |
-| **asyncio lifespan** | Weather updater runs inside FastAPI every 30 min |
+| **asyncio lifespan** | Hybrid weather updater runs inside FastAPI every 30 min |
+| **httpx (async)** | Parallel Open-Meteo fetches for all 66 cities, semaphore-limited |
 | **psycopg2-binary** | PostgreSQL driver |
 
 ### Database (Neon.tech)
 
 | Table | Contents |
 |---|---|
-| `weather_records` | 66 cities — all weather fields, updated every 30 min |
-| `fetch_logs` | Every fetch recorded with timestamp, source, success/error |
+| `weather_records` | 66 cities — all weather fields, `data_source` provenance, `forecast_json`, moonrise/moonset — updated every 30 min |
+| `fetch_logs` | Every fetch recorded with timestamp, source (`imd_synop` / `imd_aws` / `open_meteo` / `hybrid`), success/error |
 
 ### Frontend (Vercel)
 
@@ -224,9 +244,10 @@ imd-ai-hub/
 | **Vercel** | Next.js frontend | Free |
 | **Render.com** | FastAPI backend | Free |
 | **Neon.tech** | PostgreSQL database | Free |
+| **IMD API** | Official live weather/forecast/alert data | Government-provided |
 | **Groq API** | Llama 3.1 inference (primary AI) | Free |
 | **Google Gemini API** | Gemini 2.5 Flash (fallback AI) | Free tier |
-| **Open-Meteo** | Live weather data | Free |
+| **Open-Meteo** | Live weather data — fills IMD gaps + fallback | Free |
 | **UptimeRobot** | Keep Render awake | Free |
 
 > **Total infrastructure cost: ₹0 / month**
@@ -244,6 +265,8 @@ imd-ai-hub/
 | **South** | Karnataka, Tamil Nadu, Telangana, Kerala, Andhra Pradesh | Bengaluru, Chennai, Hyderabad, Kochi, Visakhapatnam |
 | **East** | West Bengal, Odisha, Bihar, Jharkhand, CG, MP | Kolkata, Bhubaneswar, Patna, Ranchi, Bhopal, Indore |
 | **Northeast** | Assam, Meghalaya, Manipur, Tripura, Mizoram | Guwahati, Shillong, Imphal, Agartala, Aizawl |
+
+Of these 66 cities, **46 have a direct IMD Synop station** (`current_wx`) and **10 are served via IMD's AWS network** (`aws_data`) for current conditions; all 66 receive IMD forecast and district-alert coverage, with Open-Meteo filling UV/AQI/visibility and acting as fallback throughout.
 
 ---
 
@@ -281,6 +304,9 @@ DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@localhost:5432/imd_weather
 GROQ_API_KEY=your_groq_api_key_from_console.groq.com
 GEMINI_API_KEY=your_gemini_api_key_from_aistudio.google.com
 IMD_API_KEY=your_imd_api_key
+IMD_EMAIL=your_imd_registered_email
+IMD_PASSWORD=your_imd_password
+PROXY_URL=optional_proxy_if_required
 ```
 
 ### 4 — Install AI dependencies
@@ -360,6 +386,18 @@ curl -X POST https://imd-backend2.onrender.com/chat \
 
 ## ☁️ Cloud Deployment Notes
 
+### Why a hybrid IMD + Open-Meteo fetcher?
+IMD's official API is the authoritative source for India-specific data — Synop and AWS station readings, government-issued district alerts, and IMD's own 5-day forecast text. But it doesn't expose UV index, AQI, or visibility, and individual stations can occasionally go stale or miss an observation window. Rather than choosing one provider, every field has a defined primary source and an automatic fallback: IMD `current_wx` → IMD `aws_data` → Open-Meteo for current conditions; IMD `cityforecastloc` → Open-Meteo for the 7-day outlook. Each city's record also tracks which source actually supplied it (`data_source`), so failures are visible in `fetch_logs` rather than silently producing wrong data.
+
+### Why a 3-hour staleness threshold?
+IMD Synop stations report on a fixed synoptic schedule (00, 03, 06, 09, 12, 15, 18, 21 UTC). If a city's latest observation is older than 3 hours, the next expected report was missed — at that point Open-Meteo's live data is more trustworthy than stale IMD data, so the fetcher switches sources automatically for that city on that run.
+
+### Why a single JWT auth class?
+IMD's token endpoint issues short-lived JWTs. Instead of refreshing per-request, `IMDAuth` caches the token and proactively refreshes it ~5 minutes before expiry, so none of the 4 bulk calls in a cycle ever fail due to an expired token.
+
+### Why only 4 IMD HTTP calls per cycle?
+IMD's bulk endpoints (`current_wx`, `aws_data`, `cityforecastloc`, `districtwarning`) each return *every* station/district in one response. Fetching once and indexing locally by station name, district, or nearest lat/lon covers all 66 cities — versus 66 separate per-city calls, which would be far slower and more likely to hit rate limits.
+
 ### Why a Dual-LLM Router?
 A single model forces a hard trade-off: Llama 3.1 8B is fast and cheap for structured data lookups but may hallucinate on general knowledge outside its fine-tuning. Gemini 2.5 Flash has broad world knowledge but adds latency for simple data queries. The router gives you both — Llama answers ~90% of dashboard questions in ~2 seconds, and Gemini handles the remainder. Llama self-selects when to escalate using a `ROUTE_TO_GEMINI` signal, so the fallback only fires when it's actually needed.
 
@@ -391,12 +429,16 @@ This project was developed as a **solo internship project** at the **India Meteo
 - Deploy as a permanently accessible public web application
 
 **Key technical decisions made:**
+- Switched to **IMD's official API as the primary live data source**, with Open-Meteo retained as a field-level gap-filler (UV, AQI, visibility) and automatic fallback for stale/missing IMD data
+- Designed a **4-call bulk fetch strategy** (`current_wx`, `aws_data`, `cityforecastloc`, `districtwarning`) to cover all 66 cities per cycle instead of per-city requests
+- Built a **self-refreshing JWT auth layer** for IMD's OAuth token endpoint
+- Defined a **3-hour staleness threshold** matching IMD's synoptic observation schedule to decide when to fall back to Open-Meteo
+- Added **per-city data provenance tracking** (`data_source` field) for transparency and debugging
 - Chose **Groq API** over local Ollama to enable cloud deployment within free tier RAM limits
 - Chose **Gemini 2.5 Flash** as a fallback LLM for general knowledge questions outside dashboard scope
 - Designed a **dual-LLM router** where Llama self-selects when to escalate to Gemini — keeping latency low for the majority of queries
 - Chose **Neon serverless PostgreSQL** for zero-maintenance cloud database
 - Chose **keyword RAG** over ChromaDB to stay within 512MB RAM on Render
-- Chose **Open-Meteo** as live data source while IMD API IP whitelisting is pending
 - Chose **asyncio background task** over a separate cron service to stay within free tier limits
 - Designed for **zero ongoing cost** — entire stack runs free indefinitely
 
@@ -404,7 +446,7 @@ This project was developed as a **solo internship project** at the **India Meteo
 
 ## 🙏 Acknowledgements
 
-- **India Meteorological Department (IMD)** — for the internship opportunity and API access approval
+- **India Meteorological Department (IMD)** — for the internship opportunity and official API access approval
 - **[Anshul Chauhan](https://www.linkedin.com/in/anshul-chauhan-7a44a775)**, Scientist D, IMD — for mentorship, project guidance, and technical direction
 - **Open-Meteo** — free open-source weather API, no rate limits
 - **Groq** — free Llama 3.1 inference API

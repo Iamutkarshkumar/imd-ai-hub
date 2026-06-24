@@ -2,15 +2,15 @@
 database.py
 -----------
 SQLAlchemy models and connection setup.
-v2 — adds state, precipitation, is_raining, is_thunderstorm,
-     is_snowfall, weather_code columns for real-time condition awareness.
+v3 — adds moonrise, moonset, forecast_json, and source-tracking
+     columns to support the IMD + Open-Meteo hybrid fetcher.
 """
 
 import os
 from dotenv import load_dotenv
 from sqlalchemy import (
     create_engine, Column, Integer, Float, String,
-    DateTime, Boolean, Text
+    DateTime, Boolean, Text, text as sql_text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime, timezone
@@ -40,7 +40,7 @@ class WeatherRecord(Base):
 
     # Location
     city          = Column(String(100), nullable=False, index=True)
-    state         = Column(String(100), nullable=True)   # e.g. "Maharashtra"
+    state         = Column(String(100), nullable=True)
     lat           = Column(Float, nullable=True)
     lon           = Column(Float, nullable=True)
 
@@ -65,23 +65,37 @@ class WeatherRecord(Base):
     wind_speed    = Column(Float)
     wind_dir      = Column(String(10))
     wind_deg      = Column(Integer)
+    wind_gust     = Column(Float)
 
     # Indices
     uv_index      = Column(Integer)
     aqi           = Column(Integer)
 
-    # ── NEW: Real-time condition fields ───────────────────────────────────
-    weather_code      = Column(Integer, default=0)   # WMO weather code
-    precipitation     = Column(Float,   default=0.0) # mm in last hour
+    # Real-time condition fields
+    weather_code      = Column(Integer, default=0)
+    precipitation     = Column(Float,   default=0.0)
     is_raining        = Column(Boolean, default=False)
     is_thunderstorm   = Column(Boolean, default=False)
     is_snowfall       = Column(Boolean, default=False)
     is_foggy          = Column(Boolean, default=False)
     condition_detail  = Column(String(200), default="")
-    # Human-readable current condition e.g.
-    # "Heavy thunderstorm with 4.2mm rain in the last hour"
+
+    # Sun / Moon
     sunrise           = Column(String(20), nullable=True)
-    sunset            = Column(String(20), nullable=True)
+    sunset             = Column(String(20), nullable=True)
+    moonrise           = Column(String(20), nullable=True)
+    moonset            = Column(String(20), nullable=True)
+
+    # 7-day forecast — stored as a JSON string.
+    # Days 1-5 come from IMD cityforecastloc (with forecast text),
+    # Days 6-7 come from Open-Meteo (temps only, text=null).
+    # Example: '[{"day":"Today","high":36.0,"low":28.0,"text":"Partly cloudy..."}]'
+    forecast_json      = Column(Text, nullable=True)
+
+    # Which upstream source supplied the CURRENT conditions for this row.
+    # One of: "imd_synop", "imd_aws", "open_meteo"
+    # Useful for debugging and for showing data provenance if ever needed.
+    data_source        = Column(String(20), default="open_meteo")
 
     updated_at    = Column(DateTime,
                            default=lambda: datetime.now(timezone.utc),
@@ -120,7 +134,6 @@ def get_db():
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-    # Safely add new columns to existing table if upgrading from v1
     new_columns = [
         ("state",            "VARCHAR(100)"),
         ("lat",              "FLOAT"),
@@ -134,14 +147,19 @@ def init_db():
         ("condition_detail", "VARCHAR(200) DEFAULT ''"),
         ("sunrise",          "VARCHAR(20)"),
         ("sunset",           "VARCHAR(20)"),
-        
+        # ── v3 additions for IMD integration ───────────────────────────
+        ("moonrise",         "VARCHAR(20)"),
+        ("moonset",          "VARCHAR(20)"),
+        ("wind_gust",        "FLOAT"),
+        ("forecast_json",    "TEXT"),
+        ("data_source",      "VARCHAR(20) DEFAULT 'open_meteo'"),
     ]
 
     with engine.connect() as conn:
         for col_name, col_type in new_columns:
             try:
                 conn.execute(
-                    __import__('sqlalchemy').text(
+                    sql_text(
                         f"ALTER TABLE weather_records ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
                     )
                 )
@@ -149,7 +167,7 @@ def init_db():
             except Exception:
                 conn.rollback()
 
-    print("✅ Database schema up to date.")
+    print("✅ Database schema up to date (v3 — IMD hybrid columns added).")
 
 
 if __name__ == "__main__":
