@@ -169,7 +169,7 @@ The AI backend uses a **two-stage intelligent routing system** to balance speed,
                     └────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
-│  Pulsetic — pings /health every 5 min · keeps Render awake│
+│  Pulsetic — pings /health every 5 min · keeps Render awake   │
 └──────────────────────────────────────────────────────────────┘
 ```
 
