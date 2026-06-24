@@ -460,7 +460,7 @@ This project was developed as a **solo internship project** at the **India Meteo
 
 ## 📄 License
 
-MIT License — free to use, modify, and distribute with attribution.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ---
 
