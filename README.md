@@ -74,7 +74,7 @@
 The AI backend uses a **two-stage intelligent routing system** to balance speed, cost, and answer quality:
 
 - **Stage 1 — Groq / openai/gpt-oss-20b (primary):** Handles all dashboard-specific queries — city temperatures, rainfall, AQI, warnings, lunar phase, forecasts — in under 2 seconds using live data injected directly into the prompt.
-- **Stage 2 — Gemini 2.5 Flash (fallback):** If Llama determines a question falls outside the live dashboard scope (general meteorology, astronomy, geography, historical weather science), it emits a `ROUTE_TO_GEMINI` signal and Gemini answers with its broader knowledge base.
+- **Stage 2 — Gemini 2.5 Flash (fallback):** If the primary model determines a question falls outside the live dashboard scope (general meteorology, astronomy, geography, historical weather science), it emits a `ROUTE_TO_GEMINI` signal and Gemini answers with its broader knowledge base.
 - **Keyword RAG** — responses grounded in real IMD advisory bulletins (heatwave, cyclone, AQI, UV, cold wave, monsoon)
 - **Voice input** — browser Speech Recognition with `en-IN` locale for Indian English and city names
 - Quick-question chips for one-tap queries
@@ -403,7 +403,7 @@ IMD's bulk endpoints (`current_wx`, `aws_data`, `cityforecastloc`, `districtwarn
 A single model forces a hard trade-off: openai/gpt-oss-20b is fast and cheap for structured data lookups but may hallucinate on general knowledge outside its fine-tuning. Gemini 2.5 Flash has broad world knowledge but adds latency for simple data queries. The router gives you both — openai/gpt-oss-20b answers ~90% of dashboard questions in ~2 seconds, and Gemini handles the remainder. The primary model self-selects when to escalate using a `ROUTE_TO_GEMINI` signal, so the fallback only fires when it's actually needed.
 
 ### Why Groq instead of Ollama?
-Ollama requires 4GB+ RAM for Llama 3.1. Render free tier has 512MB. Groq runs the same `openai/gpt-oss-20b` model on their hardware and responds in ~2 seconds — faster than local Ollama on a laptop CPU.
+Ollama requires 4GB+ RAM for large models. Render free tier has 512MB. Groq runs the same `openai/gpt-oss-20b` model on their hardware and responds in ~2 seconds — faster than local Ollama on a laptop CPU.
 
 ### Why keyword RAG instead of ChromaDB?
 `sentence-transformers` + `chromadb` require C++ compilation and 400MB+ RAM — they cause silent OOM crashes on Render free tier. The keyword RAG replacement has identical output quality for weather advisory questions with zero RAM overhead.
@@ -450,12 +450,12 @@ This project was developed as a **solo internship project** at the **India Meteo
 - **India Meteorological Department (IMD)** — for the internship opportunity and official API access approval
 - **[Anshul Chauhan](https://www.linkedin.com/in/anshul-chauhan-7a44a775)**, Scientist D, IMD — for mentorship, project guidance, and technical direction
 - **Open-Meteo** — free open-source weather API, no rate limits
-- **Groq** — free Llama 3.1 inference API
+- **Groq** — free GPT OSS 20B inference API
 - **Google** — Gemini 2.5 Flash API for general knowledge fallback
 - **Neon** — serverless PostgreSQL, free tier
 - **Render** — free cloud hosting for FastAPI backend
 - **Vercel** — free frontend hosting
-- **Meta AI** — Llama 3.1 open-source language model
+- **Meta AI** — GPT OSS 20B open-source language model
 
 ---
 
