@@ -674,7 +674,7 @@ function ChatPanel({ accent, selected }) {
         <div>
           <div style={{fontWeight:600,fontSize:13,fontFamily:"'Inter',sans-serif"}}>AI Meteorologist</div>
           <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginTop:1}}>
-            {isListening?<span style={{color:'#fca5a5'}}>● Listening…</span>:'Powered by Llama 3.1'}
+            {isListening?<span style={{color:'#fca5a5'}}>● Listening…</span>:'Powered by GPT OSS 20B'}
           </div>
         </div>
         <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>

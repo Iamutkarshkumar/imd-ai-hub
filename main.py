@@ -2,7 +2,7 @@
 main.py
 -------
 FastAPI backend — v5 (Dual-LLM Router)
-Upgraded: Groq (Llama) as primary fast router + Gemini as fallback for general knowledge.
+Upgraded: Groq (GPT OSS 20B) as primary fast router + Gemini as fallback for general knowledge.
 """
 
 import os
@@ -427,13 +427,14 @@ def build_prompt(user_text: str, weather_context: str, rag_context: str) -> str:
 
 async def ask_llm_async(prompt: str, user_text: str = "") -> str:
     """
-    Step 1 — Send to Groq/Llama for fast, cost-efficient dashboard lookups.
-    Step 2 — If Llama returns ROUTE_TO_GEMINI, escalate to Gemini for
+    Step 1 — Send to Groq (GPT OSS 20B) for fast, cost-efficient dashboard lookups.
+    Step 2 — If GPT OSS 20B returns ROUTE_TO_GEMINI, escalate to Gemini for
              general knowledge questions outside the dashboard's scope.
     """
     # ── Primary: Groq ──────────────────────────────────────────────────────
     response = await groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        # model="llama-3.1-8b-instant",
+        model="openai/gpt-oss-20b",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=150,
         temperature=0.1,   # Low temp keeps the routing flag reliable
