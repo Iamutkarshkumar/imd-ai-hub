@@ -23,7 +23,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js_15-000000?style=flat-square&logo=next.js&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-00E599?style=flat-square&logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python_3.12-3776AB?style=flat-square&logo=python&logoColor=white)
-![Groq](https://img.shields.io/badge/Groq-Llama_3.1-F55036?style=flat-square)
+![Groq](https://img.shields.io/badge/Groq-openai%2Fgpt--oss--20b-F55036?style=flat-square)
 ![Gemini](https://img.shields.io/badge/Google-Gemini_2.5_Flash-4285F4?style=flat-square&logo=google&logoColor=white)
 ![IMD](https://img.shields.io/badge/IMD-Official_API-FF6B35?style=flat-square)
 ![Vercel](https://img.shields.io/badge/Frontend-Vercel-000000?style=flat-square&logo=vercel)
@@ -73,7 +73,7 @@
 
 The AI backend uses a **two-stage intelligent routing system** to balance speed, cost, and answer quality:
 
-- **Stage 1 — Groq / Llama 3.1 8B (primary):** Handles all dashboard-specific queries — city temperatures, rainfall, AQI, warnings, lunar phase, forecasts — in under 2 seconds using live data injected directly into the prompt.
+- **Stage 1 — Groq / openai/gpt-oss-20b (primary):** Handles all dashboard-specific queries — city temperatures, rainfall, AQI, warnings, lunar phase, forecasts — in under 2 seconds using live data injected directly into the prompt.
 - **Stage 2 — Gemini 2.5 Flash (fallback):** If Llama determines a question falls outside the live dashboard scope (general meteorology, astronomy, geography, historical weather science), it emits a `ROUTE_TO_GEMINI` signal and Gemini answers with its broader knowledge base.
 - **Keyword RAG** — responses grounded in real IMD advisory bulletins (heatwave, cyclone, AQI, UV, cold wave, monsoon)
 - **Voice input** — browser Speech Recognition with `en-IN` locale for Indian English and city names
@@ -83,9 +83,9 @@ The AI backend uses a **two-stage intelligent routing system** to balance speed,
 
 | Question | Handled by |
 |---|---|
-| *"Is it raining in Kolkata?"* | ⚡ Groq / Llama — live dashboard data |
-| *"Which city has the worst AQI?"* | ⚡ Groq / Llama — QUICK STATS block |
-| *"When is the next full moon?"* | ⚡ Groq / Llama — LUNAR DATA block |
+| *"Is it raining in Kolkata?"* | ⚡ Groq / openai/gpt-oss-20b — live dashboard data |
+| *"Which city has the worst AQI?"* | ⚡ Groq / openai/gpt-oss-20b — QUICK STATS block |
+| *"When is the next full moon?"* | ⚡ Groq / openai/gpt-oss-20b — LUNAR DATA block |
 | *"What causes the Indian monsoon?"* | 🔀 Routed to Gemini 2.5 Flash |
 | *"History of cyclone forecasting?"* | 🔀 Routed to Gemini 2.5 Flash |
 
@@ -131,7 +131,7 @@ The AI backend uses a **two-stage intelligent routing system** to balance speed,
 │  ┌───────────────────┐   ┌──────────────────────────────┐    │
 │  │   SQLAlchemy ORM  │   │     Dual-LLM Router          │    │
 │  └────────┬──────────┘   │                              │    │
-│           │              │  ① Groq · Llama 3.1 8B       │    │
+│           │              │  ① Groq · openai/gpt-oss-20b │    │
 │           │              │    Dashboard & live queries  │    │
 │           │              │           ↓                  │    │
 │           │              │    ROUTE_TO_GEMINI?          │    │
@@ -214,9 +214,9 @@ imd-ai-hub/
 | **SQLAlchemy 2.0** | ORM for Neon PostgreSQL |
 | **IMD Official API** | Primary live data — Synop stations, AWS stations, forecasts, district alerts (JWT auth) |
 | **Open-Meteo** | UV index, AQI, visibility, and automatic fallback when IMD data is stale/missing |
-| **Groq API + Llama 3.1 8B** | Primary AI — fast dashboard queries (~2s) |
+| **Groq API + openai/gpt-oss-20b** | Primary AI — fast dashboard queries (~2s) |
 | **Google Gemini 2.5 Flash** | Fallback AI — general meteorology & knowledge |
-| **Dual-LLM Router** | Llama handles live data; auto-escalates to Gemini when needed |
+| **Dual-LLM Router** | openai/gpt-oss-20b handles live data; auto-escalates to Gemini when needed |
 | **Keyword RAG** | Lightweight IMD bulletin matching, zero RAM overhead |
 | **asyncio lifespan** | Hybrid weather updater runs inside FastAPI every 30 min |
 | **httpx (async)** | Parallel Open-Meteo fetches for all 66 cities, semaphore-limited |
@@ -246,7 +246,7 @@ imd-ai-hub/
 | **Render.com** | FastAPI backend | Free |
 | **Neon.tech** | PostgreSQL database | Free |
 | **IMD API** | Official live weather/forecast/alert data | Government-provided |
-| **Groq API** | Llama 3.1 inference (primary AI) | Free |
+| **Groq API** | openai/gpt-oss-20b inference (primary AI) | Free |
 | **Google Gemini API** | Gemini 2.5 Flash (fallback AI) | Free tier |
 | **Open-Meteo** | Live weather data — fills IMD gaps + fallback | Free |
 | **Pulsetic** | Uptime monitoring & keep Render awake | Free |
@@ -374,12 +374,12 @@ curl -X POST https://imd-backend2.onrender.com/chat \
 
 | Question | Answered by |
 |---|---|
-| *"Is it raining in Kolkata right now?"* | ⚡ Groq / Llama — `is_raining` + `precipitation` fields |
-| *"Which city has the worst AQI today?"* | ⚡ Groq / Llama — sorts all 66 cities by `aqi` |
-| *"Should I go out in Delhi today?"* | ⚡ Groq / Llama — temp + UV + AQI + warnings |
-| *"Is there a heatwave anywhere?"* | ⚡ Groq / Llama — filters `warning` field across all cities |
-| *"When is the next full moon?"* | ⚡ Groq / Llama — LUNAR DATA block in prompt |
-| *"How dangerous is Delhi's air quality?"* | ⚡ Groq / Llama — AQI value + RAG from IMD bulletin |
+| *"Is it raining in Kolkata right now?"* | ⚡ Groq / openai/gpt-oss-20b — `is_raining` + `precipitation` fields |
+| *"Which city has the worst AQI today?"* | ⚡ Groq / openai/gpt-oss-20b — sorts all 66 cities by `aqi` |
+| *"Should I go out in Delhi today?"* | ⚡ Groq / openai/gpt-oss-20b — temp + UV + AQI + warnings |
+| *"Is there a heatwave anywhere?"* | ⚡ Groq / openai/gpt-oss-20b — filters `warning` field across all cities |
+| *"When is the next full moon?"* | ⚡ Groq / openai/gpt-oss-20b — LUNAR DATA block in prompt |
+| *"How dangerous is Delhi's air quality?"* | ⚡ Groq / openai/gpt-oss-20b — AQI value + RAG from IMD bulletin |
 | *"What causes Bay of Bengal cyclones?"* | 🔀 Gemini 2.5 Flash — general meteorology knowledge |
 | *"Explain how monsoon depressions form"* | 🔀 Gemini 2.5 Flash — atmospheric science |
 
@@ -400,10 +400,10 @@ IMD's token endpoint issues short-lived JWTs. Instead of refreshing per-request,
 IMD's bulk endpoints (`current_wx`, `aws_data`, `cityforecastloc`, `districtwarning`) each return *every* station/district in one response. Fetching once and indexing locally by station name, district, or nearest lat/lon covers all 66 cities — versus 66 separate per-city calls, which would be far slower and more likely to hit rate limits.
 
 ### Why a Dual-LLM Router?
-A single model forces a hard trade-off: Llama 3.1 8B is fast and cheap for structured data lookups but may hallucinate on general knowledge outside its fine-tuning. Gemini 2.5 Flash has broad world knowledge but adds latency for simple data queries. The router gives you both — Llama answers ~90% of dashboard questions in ~2 seconds, and Gemini handles the remainder. Llama self-selects when to escalate using a `ROUTE_TO_GEMINI` signal, so the fallback only fires when it's actually needed.
+A single model forces a hard trade-off: openai/gpt-oss-20b is fast and cheap for structured data lookups but may hallucinate on general knowledge outside its fine-tuning. Gemini 2.5 Flash has broad world knowledge but adds latency for simple data queries. The router gives you both — openai/gpt-oss-20b answers ~90% of dashboard questions in ~2 seconds, and Gemini handles the remainder. The primary model self-selects when to escalate using a `ROUTE_TO_GEMINI` signal, so the fallback only fires when it's actually needed.
 
 ### Why Groq instead of Ollama?
-Ollama requires 4GB+ RAM for Llama 3.1. Render free tier has 512MB. Groq runs the same `llama-3.1-8b-instant` model on their hardware and responds in ~2 seconds — faster than local Ollama on a laptop CPU.
+Ollama requires 4GB+ RAM for Llama 3.1. Render free tier has 512MB. Groq runs the same `openai/gpt-oss-20b` model on their hardware and responds in ~2 seconds — faster than local Ollama on a laptop CPU.
 
 ### Why keyword RAG instead of ChromaDB?
 `sentence-transformers` + `chromadb` require C++ compilation and 400MB+ RAM — they cause silent OOM crashes on Render free tier. The keyword RAG replacement has identical output quality for weather advisory questions with zero RAM overhead.
@@ -435,7 +435,7 @@ This project was developed as a **solo internship project** at the **India Meteo
 - Built a **self-refreshing JWT auth layer** for IMD's OAuth token endpoint
 - Defined a **3-hour staleness threshold** matching IMD's synoptic observation schedule to decide when to fall back to Open-Meteo
 - Added **per-city data provenance tracking** (`data_source` field) for transparency and debugging
-- Chose **Groq API** over local Ollama to enable cloud deployment within free tier RAM limits
+- Chose **Groq API + openai/gpt-oss-20b** over local Ollama to enable cloud deployment within free tier RAM limits
 - Chose **Gemini 2.5 Flash** as a fallback LLM for general knowledge questions outside dashboard scope
 - Designed a **dual-LLM router** where Llama self-selects when to escalate to Gemini — keeping latency low for the majority of queries
 - Chose **Neon serverless PostgreSQL** for zero-maintenance cloud database
