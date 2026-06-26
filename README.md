@@ -437,7 +437,7 @@ This project was developed as a **solo internship project** at the **India Meteo
 - Added **per-city data provenance tracking** (`data_source` field) for transparency and debugging
 - Chose **Groq API + openai/gpt-oss-20b** over local Ollama to enable cloud deployment within free tier RAM limits
 - Chose **Gemini 2.5 Flash** as a fallback LLM for general knowledge questions outside dashboard scope
-- Designed a **dual-LLM router** where Llama self-selects when to escalate to Gemini — keeping latency low for the majority of queries
+- Designed a **dual-LLM router** where the primary model self-selects when to escalate to Gemini — keeping latency low for the majority of queries
 - Chose **Neon serverless PostgreSQL** for zero-maintenance cloud database
 - Chose **keyword RAG** over ChromaDB to stay within 512MB RAM on Render
 - Chose **asyncio background task** over a separate cron service to stay within free tier limits
