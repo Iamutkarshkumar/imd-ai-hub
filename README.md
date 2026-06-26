@@ -23,7 +23,7 @@
 ![Next.js](https://img.shields.io/badge/Next.js_15-000000?style=flat-square&logo=next.js&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-00E599?style=flat-square&logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python_3.12-3776AB?style=flat-square&logo=python&logoColor=white)
-![Groq](https://img.shields.io/badge/Groq-qwen%2Fqwen3--27b-F55036?style=flat-square)
+![Groq](https://img.shields.io/badge/Groq-Qwen%20%7C%20GPT--OSS-F55036?style=flat-square)
 ![Gemini](https://img.shields.io/badge/Google-Gemini_2.5_Flash-4285F4?style=flat-square&logo=google&logoColor=white)
 ![IMD](https://img.shields.io/badge/IMD-Official_API-FF6B35?style=flat-square)
 ![Vercel](https://img.shields.io/badge/Frontend-Vercel-000000?style=flat-square&logo=vercel)
