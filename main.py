@@ -1,8 +1,2436 @@
+# """
+# main.py
+# -------
+# FastAPI backend — v5 (Dual-LLM Router)
+# Upgraded: Groq (GPT OSS 20B) as primary fast router + Gemini as fallback for general knowledge.
+# """
+
+# import os
+# import re
+# import asyncio
+# import math
+# from datetime import datetime, timedelta, timezone
+# from difflib import get_close_matches
+# import json
+
+# from fastapi import FastAPI, HTTPException, Depends
+# from fastapi import Query as FastAPIQuery
+# from fastapi.middleware.cors import CORSMiddleware
+# from pydantic import BaseModel
+# from sqlalchemy.orm import Session
+# from sqlalchemy import or_, func
+# from dotenv import load_dotenv
+# from contextlib import asynccontextmanager
+
+# from database import get_db, WeatherRecord, FetchLog
+# try:
+#     from vector_store import search_bulletins, format_rag_context, collection_stats
+#     RAG_AVAILABLE = True
+# except Exception as e:
+#     print(f"⚠️ RAG unavailable (likely OOM): {e}")
+#     RAG_AVAILABLE = False
+#     def search_bulletins(*a, **kw): return []
+#     def format_rag_context(*a, **kw): return ""
+#     def collection_stats(): return {"total_chunks": 0}
+
+# # ── AI Clients: Groq (primary) + Gemini (fallback) ────────────────────────
+# from groq import AsyncGroq
+# from google import genai
+
+# load_dotenv()
+
+# # Initialize both AI clients
+# groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+# gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # LUNAR PHASE ENGINE
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# _KNOWN_NEW_MOON_TS = datetime(2024, 1, 11, 11, 57, 0, tzinfo=timezone.utc).timestamp()
+# _SYNODIC_MONTH     = 29.530588
+
+# def get_lunar_data() -> dict:
+#     """
+#     Compute current lunar phase, illumination, age, and explicit past/future target dates.
+#     """
+#     now = datetime.now(timezone.utc)
+#     now_ts = now.timestamp()
+#     age_days = ((now_ts - _KNOWN_NEW_MOON_TS) / 86400.0) % _SYNODIC_MONTH
+
+#     # Illumination — (1 - cos(phase_angle)) / 2
+#     phase_angle = (age_days / _SYNODIC_MONTH) * 2 * math.pi
+#     illumination = round((1 - math.cos(phase_angle)) / 2 * 100, 1)
+
+#     # Phase name
+#     if   age_days < 1.0 or age_days >= 28.5: phase_name = "New Moon"
+#     elif age_days < 6.3:                      phase_name = "Waxing Crescent"
+#     elif age_days < 8.3:                      phase_name = "First Quarter"
+#     elif age_days < 13.8:                     phase_name = "Waxing Gibbous"
+#     elif age_days < 15.8:                     phase_name = "Full Moon"
+#     elif age_days < 21.1:                     phase_name = "Waning Gibbous"
+#     elif age_days < 23.1:                     phase_name = "Third Quarter"
+#     else:                                     phase_name = "Waning Crescent"
+
+#     waxing = age_days < (_SYNODIC_MONTH / 2)
+
+#     # ─── EXACT CALENDAR MATH FOR LLM ───
+#     days_to_next_full = (_SYNODIC_MONTH / 2 - age_days) % _SYNODIC_MONTH
+#     days_to_next_new  = (_SYNODIC_MONTH - age_days) % _SYNODIC_MONTH
+
+#     next_full_dt = now + timedelta(days=days_to_next_full)
+#     next_new_dt  = now + timedelta(days=days_to_next_new)
+
+#     last_full_dt = next_full_dt - timedelta(days=_SYNODIC_MONTH)
+#     last_new_dt  = next_new_dt - timedelta(days=_SYNODIC_MONTH)
+
+#     # Moonrise/moonset rough estimate
+#     base_rise_min = 6 * 60
+#     moonrise_min  = int((base_rise_min + age_days * 50) % (24 * 60))
+#     moonset_min   = int((moonrise_min + 12 * 60 + 25) % (24 * 60))
+#     moonrise_str  = f"{moonrise_min // 60:02d}:{moonrise_min % 60:02d} IST"
+#     moonset_str   = f"{moonset_min   // 60:02d}:{moonset_min   % 60:02d} IST"
+
+#     if illumination >= 90 or illumination <= 10:
+#         tidal_note = "Spring tides likely (strong high/low tides near coasts)"
+#     elif 40 <= illumination <= 60:
+#         tidal_note = "Neap tides (moderate tidal range near coasts)"
+#     else:
+#         tidal_note = "Moderate tidal conditions"
+
+#     if illumination >= 85:
+#         sky_note = "Very bright moon tonight — may wash out faint stars and aurora"
+#     elif illumination >= 50:
+#         sky_note = "Moderately bright moon — some sky glow, stars still visible"
+#     elif illumination <= 15:
+#         sky_note = "Dark skies — excellent for stargazing, meteor showers visible"
+#     else:
+#         sky_note = "Partly lit moon — decent for both stargazing and navigation"
+
+#     folklore = {
+#         "New Moon":        "Traditional planting time for above-ground crops in many Indian agricultural traditions.",
+#         "Waxing Crescent": "Growing phase — auspicious for starting new ventures in some traditions.",
+#         "First Quarter":   "Half-lit moon. Good time for taking action; tides moderating.",
+#         "Waxing Gibbous":  "Nearly full — energy building. Coastal fishing communities often increase activity.",
+#         "Full Moon":       "Purnima. Culturally significant across Hindu, Buddhist, and Jain traditions. Spring tides.",
+#         "Waning Gibbous":  "Post-Purnima phase. Gratitude and reflection in many traditions.",
+#         "Third Quarter":   "Half-lit, waning. Associated with release and clearing in traditional almanacs.",
+#         "Waning Crescent": "Balsamic moon. Rest and preparation before the next cycle.",
+#     }
+
+#     return {
+#         "phase_name":        phase_name,
+#         "age_days":          round(age_days, 2),
+#         "illumination_pct":  illumination,
+#         "is_waxing":         waxing,
+#         "moonrise_approx":   moonrise_str,
+#         "moonset_approx":    moonset_str,
+#         "tidal_note":        tidal_note,
+#         "sky_visibility":    sky_note,
+#         "cultural_note":     folklore.get(phase_name, ""),
+#         "last_full_moon":    last_full_dt.strftime("%d %b %Y"),
+#         "next_full_moon":    next_full_dt.strftime("%d %b %Y"),
+#         "last_new_moon":     last_new_dt.strftime("%d %b %Y"),
+#         "next_new_moon":     next_new_dt.strftime("%d %b %Y"),
+#     }
+
+
+# def lunar_context_block() -> str:
+#     """
+#     Returns an explicitly dated, LLM-friendly string block.
+#     """
+#     d = get_lunar_data()
+#     direction = "waxing (brightening)" if d["is_waxing"] else "waning (dimming)"
+#     lines = [
+#         "=== LUNAR DATA (current) ===",
+#         f"Current Date/Time: {datetime.now().strftime('%d %b %Y %H:%M Local')}",
+#         f"Phase            : {d['phase_name']} ({direction})",
+#         f"Age              : {d['age_days']} days into the {_SYNODIC_MONTH:.2f}-day cycle",
+#         f"Illumination     : {d['illumination_pct']}%",
+#         f"LAST Full Moon   : {d['last_full_moon']}",
+#         f"NEXT Full Moon   : {d['next_full_moon']}",
+#         f"LAST New Moon    : {d['last_new_moon']}",
+#         f"NEXT New Moon    : {d['next_new_moon']}",
+#         f"Moonrise (approx): {d['moonrise_approx']}",
+#         f"Moonset  (approx): {d['moonset_approx']}",
+#         f"Tidal tendency   : {d['tidal_note']}",
+#         f"Night-sky note   : {d['sky_visibility']}",
+#         f"Cultural context : {d['cultural_note']}",
+#         "============================",
+#     ]
+#     return "\n".join(lines)
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # BACKGROUND WEATHER UPDATER
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# async def updater_loop():
+#     await asyncio.sleep(10)  # Wait for app to fully start first
+#     while True:
+#         try:
+#             from imd_live_updater import update_weather
+#             loop = asyncio.get_event_loop()
+#             await loop.run_in_executor(None, update_weather)
+#             print("✅ Weather update complete")
+#         except Exception as e:
+#             print(f"⚠️ Updater error: {e}")
+#         await asyncio.sleep(1800)  # 30 minutes
+
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     asyncio.create_task(updater_loop())
+#     yield
+
+# app = FastAPI(title="IMD Intelligent Dashboard API v5", lifespan=lifespan)
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # SYSTEM PROMPT
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# SYSTEM_PROMPT = """You are a concise IMD weather assistant for India. Answer in 1-3 sentences ONLY.
+# Rules:
+# - If asked for the highest, lowest, hottest, or coldest city, check the QUICK STATS section first.
+# - Use CONDITION DETAIL field for "is it raining / snowing / thundering" questions.
+# - Use WARNING field — always mention active warnings.
+# - For lunar / moon / tide / Purnima / Amavasya / stargazing questions, use the LUNAR DATA section.
+# - Moonrise and moonset times in the LUNAR DATA are approximate estimates based on phase age.
+# - Never say "Based on the data" or "According to the context". Answer directly.
+# - End your answer cleanly. NEVER output phrases like "End Output" or "End.".
+# - CRITICAL: If the question CANNOT be answered using the specific dashboard data provided (e.g. general
+#   science, history, geography, or astronomy not covered by the live data), do NOT guess or hallucinate.
+#   Instead, reply with EXACTLY this token and nothing else: ROUTE_TO_GEMINI"""
+
+
+# class ChatQuery(BaseModel):
+#     text: str
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # CITY + STATE MATCHING
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def get_city_map(db: Session) -> dict:
+#     rows = db.query(WeatherRecord.city).all()
+#     return {r.city.lower(): r.city for r in rows}
+
+# def get_state_map(db: Session) -> dict:
+#     rows = db.query(WeatherRecord.city, WeatherRecord.state).all()
+#     state_map = {}
+#     for city, state in rows:
+#         if state:
+#             state_map.setdefault(state.lower(), []).append(city)
+#     return state_map
+
+# def find_cities_in_query(user_text: str, db: Session) -> list[str]:
+#     text_lower = user_text.lower()
+#     found      = []
+#     city_map   = get_city_map(db)
+#     state_map  = get_state_map(db)
+
+#     for key, original in city_map.items():
+#         if key in text_lower and original not in found:
+#             found.append(original)
+
+#     for state_key, cities in state_map.items():
+#         if state_key in text_lower:
+#             for c in cities:
+#                 if c not in found:
+#                     found.append(c)
+
+#     if not found:
+#         tokens     = text_lower.split()
+#         candidates = list(city_map.keys())
+#         for token in tokens:
+#             m = get_close_matches(token, candidates, n=1, cutoff=0.82)
+#             if m:
+#                 original = city_map[m[0]]
+#                 if original not in found:
+#                     found.append(original)
+#         for i in range(len(tokens) - 1):
+#             bigram = f"{tokens[i]} {tokens[i+1]}"
+#             m = get_close_matches(bigram, candidates, n=1, cutoff=0.82)
+#             if m:
+#                 original = city_map[m[0]]
+#                 if original not in found:
+#                     found.append(original)
+
+#     return found
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # EXTENDED FORECAST
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def get_extended_forecast(user_text: str, records: list) -> str:
+#     user_lower = user_text.lower()
+#     time_words = [
+#         "tomorrow", "upcoming", "forecast", "predict", "next",
+#         "monday", "tuesday", "wednesday", "thursday", "friday",
+#         "saturday", "sunday", "weekend", "tonight", "today",
+#         "pm", "am", "evening", "morning", "at", "hour", "time"
+#     ]
+
+#     if not any(w in user_lower for w in time_words):
+#         return ""
+
+#     import requests
+#     forecast_text = "\n\n=== EXTENDED & HOURLY FORECAST ===\n"
+
+#     for r in records[:2]:
+#         if not r.lat or not r.lon:
+#             continue
+#         try:
+#             resp = requests.get(
+#                 "https://api.open-meteo.com/v1/forecast",
+#                 params={
+#                     "latitude": r.lat,
+#                     "longitude": r.lon,
+#                     "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_probability_max"],
+#                     "hourly": ["temperature_2m", "precipitation_probability"],
+#                     "timezone": "Asia/Kolkata",
+#                     "forecast_days": 7
+#                 },
+#                 timeout=4
+#             ).json()
+
+#             daily  = resp.get("daily", {})
+#             hourly = resp.get("hourly", {})
+
+#             forecast_text += f"\n{r.city} Daily Forecast:\n"
+#             times_d = daily.get("time", [])
+#             highs   = daily.get("temperature_2m_max", [])
+#             lows    = daily.get("temperature_2m_min", [])
+#             pops_d  = daily.get("precipitation_probability_max", [])
+
+#             for i in range(1, min(5, len(times_d))):
+#                 date_obj = datetime.strptime(times_d[i], "%Y-%m-%d")
+#                 day_name = date_obj.strftime("%A")
+#                 forecast_text += f"- {day_name}: High {highs[i]}°C, Low {lows[i]}°C, Rain {pops_d[i]}%\n"
+
+#             forecast_text += f"\n{r.city} Hourly Forecast:\n"
+#             times_h = hourly.get("time", [])
+#             temps_h = hourly.get("temperature_2m", [])
+#             pops_h  = hourly.get("precipitation_probability", [])
+
+#             ist_now          = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+#             current_hour_str = ist_now.strftime("%Y-%m-%dT%H:00")
+
+#             start_idx = 0
+#             for idx, t in enumerate(times_h):
+#                 if t >= current_hour_str:
+#                     start_idx = idx
+#                     break
+
+#             hourly_snippets = []
+#             for i in range(start_idx, min(start_idx + 12, len(times_h))):
+#                 t_obj         = datetime.strptime(times_h[i], "%Y-%m-%dT%H:%M")
+#                 friendly_time = t_obj.strftime("%I%p").lstrip('0')
+#                 hourly_snippets.append(f"{friendly_time}: {temps_h[i]}°C (Rain {pops_h[i]}%)")
+
+#             forecast_text += " | ".join(hourly_snippets) + "\n"
+
+#         except Exception:
+#             continue
+
+#     return forecast_text
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # CONTEXT BUILDERS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def records_to_context(records: list) -> str:
+#     if not records:
+#         return "No data available."
+
+#     lines = []
+
+#     if len(records) > 5:
+#         hottest  = max(records, key=lambda r: r.temperature)
+#         coldest  = min(records, key=lambda r: r.temperature)
+#         worst_aqi = max(
+#             (r for r in records if r.aqi is not None),
+#             key=lambda r: r.aqi,
+#             default=None
+#         )
+
+#         lines.append("=== QUICK STATS (Use this for highest/lowest questions) ===")
+#         lines.append(f"Hottest City right now: {hottest.city} at {hottest.temperature}°C")
+#         lines.append(f"Coldest City right now: {coldest.city} at {coldest.temperature}°C")
+#         if worst_aqi:
+#             lines.append(f"Worst Air Quality: {worst_aqi.city} with AQI {worst_aqi.aqi}")
+#         lines.append("=========================================================\n")
+
+#     for r in records[:15]:
+#         sr_clean = r.sunrise.split('T')[-1][:5] if r.sunrise and 'T' in r.sunrise else (r.sunrise or "N/A")
+#         ss_clean = r.sunset.split('T')[-1][:5]  if r.sunset  and 'T' in r.sunset  else (r.sunset  or "N/A")
+
+#         lines.append(
+#             f"- {r.city} ({r.state}): "
+#             f"Temp={r.temperature}°C, FeelsLike={r.feels_like}°C, "
+#             f"High={r.high}°C, Low={r.low}°C, Humidity={r.humidity}%, "
+#             f"Condition={r.condition}, "
+#             f"CONDITION DETAIL='{r.condition_detail}', "
+#             f"Precipitation={r.precipitation}mm, "
+#             f"IsRaining={r.is_raining}, IsThunderstorm={r.is_thunderstorm}, "
+#             f"IsSnow={r.is_snowfall}, IsFoggy={r.is_foggy}, "
+#             f"Wind={r.wind_speed}km/h {r.wind_dir}, "
+#             f"Pressure={r.pressure}hPa, Visibility={r.visibility}km, "
+#             f"UV={r.uv_index}, AQI={r.aqi}, Warning={r.warning}, "
+#             f"Sunrise={sr_clean}, Sunset={ss_clean}"
+#         )
+#         # Inject forecast_json as readable text for the LLM
+#         if r.forecast_json:
+#             try:
+#                 days = json.loads(r.forecast_json)
+#                 forecast_lines = ", ".join(
+#                     f"{d['day']}: {d.get('text','?')} H:{d.get('high','?')}°C L:{d.get('low','?')}°C"
+#                     for d in days
+#                 )
+#                 lines.append(f"  7-DAY FORECAST: {forecast_lines}")
+#             except Exception:
+#                 pass
+#     return "\n".join(lines)
+
+
+# _LUNAR_KEYWORDS = {
+#     "moon", "lunar", "purnima", "amavasya", "moonrise", "moonset",
+#     "full moon", "new moon", "crescent", "waxing", "waning", "gibbous",
+#     "tide", "tidal", "stargazing", "stars tonight", "night sky",
+#     "moonlight", "moon phase", "moon tonight", "ekadashi", "chaturthi",
+#     "chandra", "chandrama",
+# }
+
+# def is_lunar_query(text: str) -> bool:
+#     t = text.lower()
+#     return any(kw in t for kw in _LUNAR_KEYWORDS)
+
+
+# def build_prompt(user_text: str, weather_context: str, rag_context: str) -> str:
+#     current_time = datetime.now(timezone.utc).strftime('%A, %B %d, %Y')
+#     prompt  = f"{SYSTEM_PROMPT}\nCURRENT DATE: {current_time}\n\n"
+#     prompt += f"LIVE DATA:\n{weather_context}\n\n"
+#     prompt += f"{lunar_context_block()}\n\n"
+#     if rag_context:
+#         prompt += f"IMD SAFETY CONTEXT (use only if relevant):\n{rag_context}\n\n"
+#     prompt += f"QUESTION: {user_text}\nANSWER (1-3 sentences):"
+#     return prompt
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # DUAL-LLM ROUTER: Groq (fast) → Gemini (fallback)
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# async def ask_llm_async(prompt: str, user_text: str = "") -> str:
+#     """
+#     Step 1 — Send to Groq (GPT OSS 20B) for fast, cost-efficient dashboard lookups.
+#     Step 2 — If GPT OSS 20B returns ROUTE_TO_GEMINI, escalate to Gemini for
+#              general knowledge questions outside the dashboard's scope.
+#     """
+#     # ── Primary: Groq ──────────────────────────────────────────────────────
+#     response = await groq_client.chat.completions.create(
+#         # model="llama-3.1-8b-instant",
+#         model="openai/gpt-oss-20b",
+#         messages=[{"role": "user", "content": prompt}],
+#         max_tokens=150,
+#         temperature=0.1,   # Low temp keeps the routing flag reliable
+#     )
+#     reply = response.choices[0].message.content.strip()
+
+#     # ── Fallback: Gemini ───────────────────────────────────────────────────
+#     if "ROUTE_TO_GEMINI" in reply:
+#         print(f"🔄 Routing to Gemini for: '{user_text}'")
+
+#         # Added explicit instruction for Indian context
+#         gemini_prompt = (
+#             "You are an expert meteorologist, astronomer, and geographer assisting users on an Indian weather dashboard. "
+#             "CRITICAL INSTRUCTION: Always answer within an Indian context (e.g., if asked about states, farming, geography,etc assume India) "
+#             "UNLESS the user explicitly specifies another country. "
+#             "Answer the following question accurately and concisely (2-4 sentences max):\n\n"
+#             f"Question: {user_text}"
+#         )
+
+#         # Wrap Gemini in a try/except to handle 503 overload errors gracefully
+#         try:
+#             # google-genai SDK is synchronous — run in executor to stay async-friendly
+#             gemini_response = await asyncio.get_event_loop().run_in_executor(
+#                 None,
+#                 lambda: gemini_client.models.generate_content(
+#                     model="gemini-2.5-flash",
+#                     contents=gemini_prompt,
+#                 )
+#             )
+#             return gemini_response.text.strip()
+#         except Exception as gemini_error:
+#             print(f"❌ Gemini API error: {gemini_error}")
+#             return "My general knowledge database is currently experiencing high demand! Please try asking me again in a few minutes, or ask me a live weather question right now."
+
+#     return reply
+
+# def clean_response(text: str) -> str:
+#     text  = text.strip()
+#     lower = text.lower()
+#     for f in [
+#         "based on the data provided,", "based on the provided data,",
+#         "according to the context,",   "according to the live data,",
+#         "based on the live data,",     "based on the condition detail,",
+#     ]:
+#         if lower.startswith(f):
+#             text = text[len(f):].strip()
+#             text = text[0].upper() + text[1:] if text else text
+#             break
+#     sentences = re.split(r'(?<=[.!?])\s+', text)
+#     text = " ".join(sentences[:3]).strip()
+#     text = re.sub(r'(?i)\s*(End Output|End of Output|End\.|End)\s*$', '', text).strip()
+#     return text
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # ENDPOINTS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# @app.get("/")
+# async def root():
+#     return {"status": "IMD API is running!"}
+
+# @app.get("/weather-stats")
+# async def get_stats(db: Session = Depends(get_db)):
+#     records = db.query(WeatherRecord).order_by(WeatherRecord.state, WeatherRecord.city).all()
+#     if not records:
+#         raise HTTPException(status_code=404, detail="No weather data found.")
+#     return [r.to_dict() for r in records]
+
+# @app.get("/map-data")
+# async def get_map_data(db: Session = Depends(get_db)):
+#     records = db.query(WeatherRecord).all()
+#     return [{
+#         "city": r.city, "state": r.state, "lat": r.lat, "lon": r.lon,
+#         "temperature": r.temperature, "condition": r.condition,
+#         "condition_detail": r.condition_detail, "weather_code": r.weather_code,
+#         "is_raining": r.is_raining, "is_thunderstorm": r.is_thunderstorm,
+#         "is_snowfall": r.is_snowfall, "is_foggy": r.is_foggy,
+#         "precipitation": r.precipitation, "warning": r.warning,
+#         "aqi": r.aqi, "humidity": r.humidity,
+#     } for r in records if r.lat and r.lon]
+
+# @app.get("/states")
+# async def get_states(db: Session = Depends(get_db)):
+#     rows = db.query(
+#         WeatherRecord.state,
+#         func.count(WeatherRecord.id).label("city_count"),
+#         func.avg(WeatherRecord.temperature).label("avg_temp"),
+#     ).group_by(WeatherRecord.state).order_by(WeatherRecord.state).all()
+#     return [
+#         {
+#             "state": row.state,
+#             "city_count": row.city_count,
+#             "avg_temp": round(row.avg_temp, 1) if row.avg_temp else None,
+#         }
+#         for row in rows
+#     ]
+
+# @app.get("/search")
+# async def search_cities(
+#     q: str = FastAPIQuery(..., min_length=1),
+#     db: Session = Depends(get_db)
+# ):
+#     pattern = f"%{q}%"
+#     records = (
+#         db.query(WeatherRecord)
+#         .filter(or_(WeatherRecord.city.ilike(pattern), WeatherRecord.state.ilike(pattern)))
+#         .order_by(WeatherRecord.state, WeatherRecord.city)
+#         .all()
+#     )
+#     return [r.to_dict() for r in records]
+
+# @app.get("/city/{city_name}")
+# async def get_city(city_name: str, db: Session = Depends(get_db)):
+#     record = db.query(WeatherRecord).filter(WeatherRecord.city.ilike(f"%{city_name}%")).first()
+#     if not record:
+#         raise HTTPException(status_code=404, detail=f"City '{city_name}' not found.")
+#     return record.to_dict()
+
+# @app.get("/alerts")
+# async def get_alerts(db: Session = Depends(get_db)):
+#     records = (
+#         db.query(WeatherRecord)
+#         .filter(WeatherRecord.warning != "None", WeatherRecord.warning.isnot(None))
+#         .order_by(WeatherRecord.warning)
+#         .all()
+#     )
+#     return [r.to_dict() for r in records]
+
+# @app.get("/currently-raining")
+# async def currently_raining(db: Session = Depends(get_db)):
+#     records = db.query(WeatherRecord).filter(
+#         or_(WeatherRecord.is_raining == True, WeatherRecord.is_thunderstorm == True)
+#     ).all()
+#     return [
+#         {
+#             "city": r.city,
+#             "state": r.state,
+#             "condition_detail": r.condition_detail,
+#             "precipitation": r.precipitation,
+#             "is_thunderstorm": r.is_thunderstorm,
+#         }
+#         for r in records
+#     ]
+
+# @app.get("/fetch-logs")
+# async def get_fetch_logs(limit: int = 20, db: Session = Depends(get_db)):
+#     logs = db.query(FetchLog).order_by(FetchLog.fetched_at.desc()).limit(limit).all()
+#     return [l.to_dict() for l in logs]
+
+# @app.get("/rag-stats")
+# async def get_rag_stats():
+#     return collection_stats()
+
+# @app.get("/lunar")
+# async def get_lunar():
+#     """
+#     Returns full lunar phase data for the current moment.
+#     The frontend can call this to keep its moon icon in sync with
+#     what the AI knows, or to display a richer lunar info card.
+#     """
+#     return get_lunar_data()
+
+# @app.post("/chat")
+# async def chat_with_weather(query: ChatQuery, db: Session = Depends(get_db)):
+#     user_text = query.text.strip()
+#     if not user_text:
+#         raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+
+#     cities  = find_cities_in_query(user_text, db)
+#     records = (
+#         db.query(WeatherRecord).filter(WeatherRecord.city.in_(cities[:8])).all()
+#         if cities
+#         else db.query(WeatherRecord).all()
+#     )
+
+#     weather_context  = records_to_context(records)
+#     weather_context += get_extended_forecast(user_text, records)
+
+#     rag_hits    = search_bulletins(user_text, n_results=2)
+#     rag_context = format_rag_context(rag_hits, max_chars=500)
+
+#     prompt = build_prompt(user_text, weather_context, rag_context)
+
+#     try:
+#         raw      = await ask_llm_async(prompt, user_text=user_text)
+#         response = clean_response(raw)
+#     except Exception as e:
+#         print(f"❌ LLM error: {e}")
+#         return {
+#             "cities_detected": cities[:8],
+#             "ai_response": f"AI temporarily unavailable: {str(e)}",
+#         }
+
+#     lunar = get_lunar_data()
+#     return {
+#         "cities_detected": cities[:8],
+#         "ai_response":     response,
+#         "lunar_snapshot":  lunar,
+#     }
+
+# @app.get("/health")
+# async def health(db: Session = Depends(get_db)):
+#     city_count  = db.query(WeatherRecord).count()
+#     state_count = db.query(WeatherRecord.state).distinct().count()
+#     rag         = collection_stats()
+#     lunar       = get_lunar_data()
+#     return {
+#         "status":              "ok",
+#         "db_connected":        True,
+#         "city_count":          city_count,
+#         "state_count":         state_count,
+#         "rag_chunks":          rag["total_chunks"],
+#         "lunar_phase":         lunar["phase_name"],
+#         "lunar_illumination":  lunar["illumination_pct"],
+#         "timestamp":           datetime.now(timezone.utc).isoformat(),
+#     }
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+
+
+
+# """
+# main.py
+# -------
+# FastAPI backend — v6 (Robust Multi-Model Router)
+
+# Model strategy:
+#   Tier 1 (Groq fast)     : llama-3.1-8b-instant        — huge TPD, very fast
+#   Tier 2 (Groq smart)    : llama-3.3-70b-versatile      — smarter, for tricky/complex questions
+#   Tier 3 (Gemini)        : gemini-2.5-flash             — true general-knowledge fallback only
+
+# Fixes vs v5:
+#   - openai/gpt-oss-20b removed (tiny 200k TPD limit → rate errors)
+#   - gemma2-9b-it removed (decommissioned)
+#   - Smart query classifier: city-only input → weather summary (not ROUTE_TO_GEMINI)
+#   - 429 / rate-limit errors auto-cascade to next tier instead of crashing
+#   - Blank / ROUTE_TO_GEMINI responses detected and re-routed properly
+#   - System prompt hardened: no more leaked routing tokens in user-facing replies
+# """
+
+# import os
+# import re
+# import asyncio
+# import math
+# from datetime import datetime, timedelta, timezone
+# from difflib import get_close_matches
+# import json
+
+# from fastapi import FastAPI, HTTPException, Depends
+# from fastapi import Query as FastAPIQuery
+# from fastapi.middleware.cors import CORSMiddleware
+# from pydantic import BaseModel
+# from sqlalchemy.orm import Session
+# from sqlalchemy import or_, func
+# from dotenv import load_dotenv
+# from contextlib import asynccontextmanager
+
+# from database import get_db, WeatherRecord, FetchLog
+
+# try:
+#     from vector_store import search_bulletins, format_rag_context, collection_stats
+#     RAG_AVAILABLE = True
+# except Exception as e:
+#     print(f"⚠️ RAG unavailable (likely OOM): {e}")
+#     RAG_AVAILABLE = False
+#     def search_bulletins(*a, **kw): return []
+#     def format_rag_context(*a, **kw): return ""
+#     def collection_stats(): return {"total_chunks": 0}
+
+# # ── AI Clients ─────────────────────────────────────────────────────────────
+# from groq import AsyncGroq
+# from google import genai
+
+# load_dotenv()
+
+# groq_client   = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+# gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+# # ── Groq model tiers (in priority order) ──────────────────────────────────
+# # Tier 1: fast + massive token limits → use for all dashboard queries
+# # Tier 2: smarter → escalate only when tier 1 gives a routing signal
+# GROQ_TIER1 = "llama-3.1-8b-instant"      # Production, huge TPD, ~800 tokens/s
+# GROQ_TIER2 = "llama-3.3-70b-versatile"   # Production, smarter, good TPD
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # LUNAR PHASE ENGINE
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# _KNOWN_NEW_MOON_TS = datetime(2024, 1, 11, 11, 57, 0, tzinfo=timezone.utc).timestamp()
+# _SYNODIC_MONTH     = 29.530588
+
+
+# def get_lunar_data() -> dict:
+#     now      = datetime.now(timezone.utc)
+#     now_ts   = now.timestamp()
+#     age_days = ((now_ts - _KNOWN_NEW_MOON_TS) / 86400.0) % _SYNODIC_MONTH
+
+#     phase_angle  = (age_days / _SYNODIC_MONTH) * 2 * math.pi
+#     illumination = round((1 - math.cos(phase_angle)) / 2 * 100, 1)
+
+#     if   age_days < 1.0 or age_days >= 28.5: phase_name = "New Moon"
+#     elif age_days < 6.3:                      phase_name = "Waxing Crescent"
+#     elif age_days < 8.3:                      phase_name = "First Quarter"
+#     elif age_days < 13.8:                     phase_name = "Waxing Gibbous"
+#     elif age_days < 15.8:                     phase_name = "Full Moon"
+#     elif age_days < 21.1:                     phase_name = "Waning Gibbous"
+#     elif age_days < 23.1:                     phase_name = "Third Quarter"
+#     else:                                     phase_name = "Waning Crescent"
+
+#     waxing = age_days < (_SYNODIC_MONTH / 2)
+
+#     days_to_next_full = (_SYNODIC_MONTH / 2 - age_days) % _SYNODIC_MONTH
+#     days_to_next_new  = (_SYNODIC_MONTH     - age_days) % _SYNODIC_MONTH
+
+#     next_full_dt = now + timedelta(days=days_to_next_full)
+#     next_new_dt  = now + timedelta(days=days_to_next_new)
+#     last_full_dt = next_full_dt - timedelta(days=_SYNODIC_MONTH)
+#     last_new_dt  = next_new_dt  - timedelta(days=_SYNODIC_MONTH)
+
+#     base_rise_min = 6 * 60
+#     moonrise_min  = int((base_rise_min + age_days * 50) % (24 * 60))
+#     moonset_min   = int((moonrise_min + 12 * 60 + 25)  % (24 * 60))
+#     moonrise_str  = f"{moonrise_min // 60:02d}:{moonrise_min % 60:02d} IST"
+#     moonset_str   = f"{moonset_min   // 60:02d}:{moonset_min  % 60:02d} IST"
+
+#     if illumination >= 90 or illumination <= 10:
+#         tidal_note = "Spring tides likely (strong high/low tides near coasts)"
+#     elif 40 <= illumination <= 60:
+#         tidal_note = "Neap tides (moderate tidal range near coasts)"
+#     else:
+#         tidal_note = "Moderate tidal conditions"
+
+#     if illumination >= 85:
+#         sky_note = "Very bright moon tonight — may wash out faint stars and aurora"
+#     elif illumination >= 50:
+#         sky_note = "Moderately bright moon — some sky glow, stars still visible"
+#     elif illumination <= 15:
+#         sky_note = "Dark skies — excellent for stargazing, meteor showers visible"
+#     else:
+#         sky_note = "Partly lit moon — decent for both stargazing and navigation"
+
+#     folklore = {
+#         "New Moon":        "Traditional planting time for above-ground crops in many Indian agricultural traditions.",
+#         "Waxing Crescent": "Growing phase — auspicious for starting new ventures in some traditions.",
+#         "First Quarter":   "Half-lit moon. Good time for taking action; tides moderating.",
+#         "Waxing Gibbous":  "Nearly full — energy building. Coastal fishing communities often increase activity.",
+#         "Full Moon":       "Purnima. Culturally significant across Hindu, Buddhist, and Jain traditions. Spring tides.",
+#         "Waning Gibbous":  "Post-Purnima phase. Gratitude and reflection in many traditions.",
+#         "Third Quarter":   "Half-lit, waning. Associated with release and clearing in traditional almanacs.",
+#         "Waning Crescent": "Balsamic moon. Rest and preparation before the next cycle.",
+#     }
+
+#     return {
+#         "phase_name":       phase_name,
+#         "age_days":         round(age_days, 2),
+#         "illumination_pct": illumination,
+#         "is_waxing":        waxing,
+#         "moonrise_approx":  moonrise_str,
+#         "moonset_approx":   moonset_str,
+#         "tidal_note":       tidal_note,
+#         "sky_visibility":   sky_note,
+#         "cultural_note":    folklore.get(phase_name, ""),
+#         "last_full_moon":   last_full_dt.strftime("%d %b %Y"),
+#         "next_full_moon":   next_full_dt.strftime("%d %b %Y"),
+#         "last_new_moon":    last_new_dt.strftime("%d %b %Y"),
+#         "next_new_moon":    next_new_dt.strftime("%d %b %Y"),
+#     }
+
+
+# def lunar_context_block() -> str:
+#     d         = get_lunar_data()
+#     direction = "waxing (brightening)" if d["is_waxing"] else "waning (dimming)"
+#     lines = [
+#         "=== LUNAR DATA (current) ===",
+#         f"Current Date/Time: {datetime.now().strftime('%d %b %Y %H:%M Local')}",
+#         f"Phase            : {d['phase_name']} ({direction})",
+#         f"Age              : {d['age_days']} days into the {_SYNODIC_MONTH:.2f}-day cycle",
+#         f"Illumination     : {d['illumination_pct']}%",
+#         f"LAST Full Moon   : {d['last_full_moon']}",
+#         f"NEXT Full Moon   : {d['next_full_moon']}",
+#         f"LAST New Moon    : {d['last_new_moon']}",
+#         f"NEXT New Moon    : {d['next_new_moon']}",
+#         f"Moonrise (approx): {d['moonrise_approx']}",
+#         f"Moonset  (approx): {d['moonset_approx']}",
+#         f"Tidal tendency   : {d['tidal_note']}",
+#         f"Night-sky note   : {d['sky_visibility']}",
+#         f"Cultural context : {d['cultural_note']}",
+#         "============================",
+#     ]
+#     return "\n".join(lines)
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # BACKGROUND WEATHER UPDATER
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# async def updater_loop():
+#     await asyncio.sleep(10)
+#     while True:
+#         try:
+#             from imd_live_updater import update_weather
+#             loop = asyncio.get_event_loop()
+#             await loop.run_in_executor(None, update_weather)
+#             print("✅ Weather update complete")
+#         except Exception as e:
+#             print(f"⚠️ Updater error: {e}")
+#         await asyncio.sleep(1800)
+
+
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     asyncio.create_task(updater_loop())
+#     yield
+
+
+# app = FastAPI(title="IMD Intelligent Dashboard API v6", lifespan=lifespan)
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # SYSTEM PROMPTS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# # ── Tier 1 prompt (fast model, dashboard-only) ─────────────────────────────
+# SYSTEM_PROMPT_TIER1 = """You are a concise IMD weather assistant for India. Answer in 1-3 sentences ONLY.
+
+# Rules:
+# - If the user types ONLY a city or place name (e.g. "New Delhi", "Mumbai"), give a friendly weather
+#   summary for that city using the live data — temperature, condition, and any warning.
+# - If asked for hottest/coldest/best city, use the QUICK STATS section.
+# - Use the CONDITION DETAIL field for rain/snow/thunder questions.
+# - Always mention active WARNING values (never ignore them).
+# - For moon/lunar/tide/Purnima/Amavasya/stargazing, use the LUNAR DATA section.
+# - Answer directly. Never say "Based on the data" or "According to the context".
+# - End cleanly. Never output "End Output", "End.", or any meta-commentary.
+# - ONLY if the question is completely outside weather, astronomy, or Indian geography/farming
+#   (e.g. history, politics, coding, recipes), reply with EXACTLY: ROUTE_TO_GENERAL
+#   Do NOT use this token for ANY weather, city, state, rain, temperature, or moon question."""
+
+# # ── Tier 2 prompt (smarter model, for borderline/complex questions) ─────────
+# SYSTEM_PROMPT_TIER2 = """You are a knowledgeable IMD weather and India geography assistant.
+# Answer clearly in 2-4 sentences. You have live weather data and lunar data available.
+
+# - Always use the live data when relevant (weather, temperature, rain, moon, AQI, etc.)
+# - For India geography, farming calendars, climate science, monsoon patterns — answer directly.
+# - For questions with no relation to weather, India, or astronomy, reply: ROUTE_TO_GENERAL
+# - Never output "End Output", "End.", or any meta-commentary."""
+
+
+# class ChatQuery(BaseModel):
+#     text: str
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # QUERY CLASSIFIER — avoid wasting LLM calls on obviously non-general queries
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# _WEATHER_KEYWORDS = {
+#     "weather", "temperature", "temp", "rain", "raining", "rainfall", "humid",
+#     "humidity", "wind", "storm", "thunder", "lightning", "fog", "foggy",
+#     "haze", "hazy", "cloud", "cloudy", "sunny", "sun", "hot", "cold", "warm",
+#     "cool", "heat", "aqi", "air quality", "pollution", "uv", "pressure",
+#     "visibility", "forecast", "tomorrow", "weekend", "today", "tonight",
+#     "warning", "alert", "flood", "cyclone", "monsoon", "drizzle", "snow",
+#     "hail", "sunrise", "sunset", "feels like", "hottest", "coldest", "best",
+#     "worst", "highest", "lowest", "compare", "difference", "which city",
+# }
+
+# _LUNAR_KEYWORDS = {
+#     "moon", "lunar", "purnima", "amavasya", "moonrise", "moonset",
+#     "full moon", "new moon", "crescent", "waxing", "waning", "gibbous",
+#     "tide", "tidal", "stargazing", "stars tonight", "night sky", "moonlight",
+#     "moon phase", "moon tonight", "ekadashi", "chaturthi", "chandra",
+#     "chandrama",
+# }
+
+# def is_dashboard_query(text: str) -> bool:
+#     """Return True if the query is clearly about weather, location, or moon data."""
+#     t = text.lower()
+#     return any(kw in t for kw in _WEATHER_KEYWORDS | _LUNAR_KEYWORDS)
+
+
+# def is_city_only_query(text: str, db: Session) -> bool:
+#     """Return True if the user typed just a city/state name with no action words."""
+#     stripped = text.strip()
+#     # Short query, no question mark or weather verbs → likely "just show me this city"
+#     if len(stripped.split()) <= 4 and "?" not in stripped:
+#         cities = find_cities_in_query(stripped, db)
+#         if cities:
+#             return True
+#     return False
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # CITY + STATE MATCHING
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def get_city_map(db: Session) -> dict:
+#     rows = db.query(WeatherRecord.city).all()
+#     return {r.city.lower(): r.city for r in rows}
+
+
+# def get_state_map(db: Session) -> dict:
+#     rows = db.query(WeatherRecord.city, WeatherRecord.state).all()
+#     state_map = {}
+#     for city, state in rows:
+#         if state:
+#             state_map.setdefault(state.lower(), []).append(city)
+#     return state_map
+
+
+# def find_cities_in_query(user_text: str, db: Session) -> list[str]:
+#     text_lower = user_text.lower()
+#     found      = []
+#     city_map   = get_city_map(db)
+#     state_map  = get_state_map(db)
+
+#     for key, original in city_map.items():
+#         if key in text_lower and original not in found:
+#             found.append(original)
+
+#     for state_key, cities in state_map.items():
+#         if state_key in text_lower:
+#             for c in cities:
+#                 if c not in found:
+#                     found.append(c)
+
+#     if not found:
+#         tokens     = text_lower.split()
+#         candidates = list(city_map.keys())
+#         for token in tokens:
+#             m = get_close_matches(token, candidates, n=1, cutoff=0.82)
+#             if m:
+#                 original = city_map[m[0]]
+#                 if original not in found:
+#                     found.append(original)
+#         for i in range(len(tokens) - 1):
+#             bigram = f"{tokens[i]} {tokens[i+1]}"
+#             m = get_close_matches(bigram, candidates, n=1, cutoff=0.82)
+#             if m:
+#                 original = city_map[m[0]]
+#                 if original not in found:
+#                     found.append(original)
+
+#     return found
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # EXTENDED FORECAST
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def get_extended_forecast(user_text: str, records: list) -> str:
+#     user_lower = user_text.lower()
+#     time_words = [
+#         "tomorrow", "upcoming", "forecast", "predict", "next",
+#         "monday", "tuesday", "wednesday", "thursday", "friday",
+#         "saturday", "sunday", "weekend", "tonight", "today",
+#         "pm", "am", "evening", "morning", "at", "hour", "time"
+#     ]
+
+#     if not any(w in user_lower for w in time_words):
+#         return ""
+
+#     import requests
+#     forecast_text = "\n\n=== EXTENDED & HOURLY FORECAST ===\n"
+
+#     for r in records[:2]:
+#         if not r.lat or not r.lon:
+#             continue
+#         try:
+#             resp = requests.get(
+#                 "https://api.open-meteo.com/v1/forecast",
+#                 params={
+#                     "latitude":   r.lat,
+#                     "longitude":  r.lon,
+#                     "daily":      ["temperature_2m_max", "temperature_2m_min",
+#                                    "precipitation_probability_max"],
+#                     "hourly":     ["temperature_2m", "precipitation_probability"],
+#                     "timezone":   "Asia/Kolkata",
+#                     "forecast_days": 7
+#                 },
+#                 timeout=4
+#             ).json()
+
+#             daily  = resp.get("daily", {})
+#             hourly = resp.get("hourly", {})
+
+#             forecast_text += f"\n{r.city} Daily Forecast:\n"
+#             times_d = daily.get("time", [])
+#             highs   = daily.get("temperature_2m_max", [])
+#             lows    = daily.get("temperature_2m_min", [])
+#             pops_d  = daily.get("precipitation_probability_max", [])
+
+#             for i in range(1, min(5, len(times_d))):
+#                 date_obj = datetime.strptime(times_d[i], "%Y-%m-%d")
+#                 day_name = date_obj.strftime("%A")
+#                 forecast_text += f"- {day_name}: High {highs[i]}°C, Low {lows[i]}°C, Rain {pops_d[i]}%\n"
+
+#             forecast_text += f"\n{r.city} Hourly Forecast:\n"
+#             times_h = hourly.get("time", [])
+#             temps_h = hourly.get("temperature_2m", [])
+#             pops_h  = hourly.get("precipitation_probability", [])
+
+#             ist_now          = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+#             current_hour_str = ist_now.strftime("%Y-%m-%dT%H:00")
+
+#             start_idx = 0
+#             for idx, t in enumerate(times_h):
+#                 if t >= current_hour_str:
+#                     start_idx = idx
+#                     break
+
+#             hourly_snippets = []
+#             for i in range(start_idx, min(start_idx + 12, len(times_h))):
+#                 t_obj         = datetime.strptime(times_h[i], "%Y-%m-%dT%H:%M")
+#                 friendly_time = t_obj.strftime("%I%p").lstrip("0")
+#                 hourly_snippets.append(
+#                     f"{friendly_time}: {temps_h[i]}°C (Rain {pops_h[i]}%)"
+#                 )
+
+#             forecast_text += " | ".join(hourly_snippets) + "\n"
+
+#         except Exception:
+#             continue
+
+#     return forecast_text
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # CONTEXT BUILDERS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def records_to_context(records: list) -> str:
+#     if not records:
+#         return "No data available."
+
+#     lines = []
+
+#     if len(records) > 5:
+#         hottest   = max(records, key=lambda r: r.temperature)
+#         coldest   = min(records, key=lambda r: r.temperature)
+#         worst_aqi = max(
+#             (r for r in records if r.aqi is not None),
+#             key=lambda r: r.aqi,
+#             default=None,
+#         )
+
+#         lines.append("=== QUICK STATS (Use this for highest/lowest questions) ===")
+#         lines.append(f"Hottest City right now: {hottest.city} at {hottest.temperature}°C")
+#         lines.append(f"Coldest City right now: {coldest.city} at {coldest.temperature}°C")
+#         if worst_aqi:
+#             lines.append(f"Worst Air Quality: {worst_aqi.city} with AQI {worst_aqi.aqi}")
+#         lines.append("=========================================================\n")
+
+#     for r in records[:15]:
+#         sr_clean = (
+#             r.sunrise.split("T")[-1][:5]
+#             if r.sunrise and "T" in r.sunrise
+#             else (r.sunrise or "N/A")
+#         )
+#         ss_clean = (
+#             r.sunset.split("T")[-1][:5]
+#             if r.sunset and "T" in r.sunset
+#             else (r.sunset or "N/A")
+#         )
+
+#         lines.append(
+#             f"- {r.city} ({r.state}): "
+#             f"Temp={r.temperature}°C, FeelsLike={r.feels_like}°C, "
+#             f"High={r.high}°C, Low={r.low}°C, Humidity={r.humidity}%, "
+#             f"Condition={r.condition}, "
+#             f"CONDITION DETAIL='{r.condition_detail}', "
+#             f"Precipitation={r.precipitation}mm, "
+#             f"IsRaining={r.is_raining}, IsThunderstorm={r.is_thunderstorm}, "
+#             f"IsSnow={r.is_snowfall}, IsFoggy={r.is_foggy}, "
+#             f"Wind={r.wind_speed}km/h {r.wind_dir}, "
+#             f"Pressure={r.pressure}hPa, Visibility={r.visibility}km, "
+#             f"UV={r.uv_index}, AQI={r.aqi}, Warning={r.warning}, "
+#             f"Sunrise={sr_clean}, Sunset={ss_clean}"
+#         )
+
+#         if r.forecast_json:
+#             try:
+#                 days = json.loads(r.forecast_json)
+#                 forecast_lines = ", ".join(
+#                     f"{d['day']}: {d.get('text','?')} H:{d.get('high','?')}°C L:{d.get('low','?')}°C"
+#                     for d in days
+#                 )
+#                 lines.append(f"  7-DAY FORECAST: {forecast_lines}")
+#             except Exception:
+#                 pass
+
+#     return "\n".join(lines)
+
+
+# def build_prompt(user_text: str, weather_context: str, rag_context: str,
+#                  system_prompt: str) -> str:
+#     current_time = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+#     prompt  = f"{system_prompt}\nCURRENT DATE: {current_time}\n\n"
+#     prompt += f"LIVE DATA:\n{weather_context}\n\n"
+#     prompt += f"{lunar_context_block()}\n\n"
+#     if rag_context:
+#         prompt += f"IMD SAFETY CONTEXT (use only if relevant):\n{rag_context}\n\n"
+#     prompt += f"QUESTION: {user_text}\nANSWER (1-3 sentences):"
+#     return prompt
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # MULTI-TIER LLM ROUTER
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def _is_route_signal(text: str) -> bool:
+#     """Check if the LLM returned a routing token instead of an answer."""
+#     t = text.strip().upper()
+#     return "ROUTE_TO_GEMINI" in t or "ROUTE_TO_GENERAL" in t or len(t) < 5
+
+
+# async def _call_groq(model: str, prompt: str, max_tokens: int = 200) -> str:
+#     """Call Groq with a given model. Raises on error (caller handles retry)."""
+#     response = await groq_client.chat.completions.create(
+#         model=model,
+#         messages=[{"role": "user", "content": prompt}],
+#         max_tokens=max_tokens,
+#         temperature=0.2,
+#     )
+#     return response.choices[0].message.content.strip()
+
+
+# async def _call_gemini(user_text: str) -> str:
+#     """Call Gemini for true general-knowledge questions."""
+#     gemini_prompt = (
+#         "You are an expert meteorologist, astronomer, and geographer assisting users on "
+#         "an Indian weather dashboard. "
+#         "CRITICAL: Always assume Indian context (states, farming, geography, festivals, etc.) "
+#         "UNLESS the user explicitly names another country. "
+#         "Answer accurately and concisely in 2-4 sentences.\n\n"
+#         f"Question: {user_text}"
+#     )
+#     try:
+#         gemini_response = await asyncio.get_event_loop().run_in_executor(
+#             None,
+#             lambda: gemini_client.models.generate_content(
+#                 model="gemini-2.5-flash",
+#                 contents=gemini_prompt,
+#             ),
+#         )
+#         return gemini_response.text.strip()
+#     except Exception as gemini_err:
+#         print(f"❌ Gemini error: {gemini_err}")
+#         return (
+#             "My general knowledge module is currently busy. "
+#             "Please try again in a moment, or ask me a live weather question!"
+#         )
+
+
+# async def ask_llm_async(
+#     prompt_tier1: str,
+#     prompt_tier2: str,
+#     user_text: str,
+# ) -> str:
+#     """
+#     Three-tier routing:
+#       1. Groq llama-3.1-8b-instant (fast, huge quota)
+#          → if routing signal or 429, escalate
+#       2. Groq llama-3.3-70b-versatile (smarter, more quota than gpt-oss-20b)
+#          → if routing signal or 429, escalate
+#       3. Gemini 2.5 Flash (general knowledge fallback)
+#     """
+
+#     # ── Tier 1: fast Llama 8B ────────────────────────────────────────────
+#     try:
+#         reply = await _call_groq(GROQ_TIER1, prompt_tier1)
+#         print(f"✅ Tier 1 ({GROQ_TIER1}) answered")
+#         if not _is_route_signal(reply):
+#             return reply
+#         print(f"↗️  Tier 1 routing signal — escalating to Tier 2")
+#     except Exception as e:
+#         err_str = str(e)
+#         if "429" in err_str or "rate_limit" in err_str.lower():
+#             print(f"⚠️ Tier 1 rate-limited — trying Tier 2")
+#         else:
+#             print(f"⚠️ Tier 1 error: {e} — trying Tier 2")
+
+#     # ── Tier 2: smarter Llama 70B ────────────────────────────────────────
+#     try:
+#         reply = await _call_groq(GROQ_TIER2, prompt_tier2, max_tokens=250)
+#         print(f"✅ Tier 2 ({GROQ_TIER2}) answered")
+#         if not _is_route_signal(reply):
+#             return reply
+#         print(f"↗️  Tier 2 routing signal — escalating to Gemini")
+#     except Exception as e:
+#         err_str = str(e)
+#         if "429" in err_str or "rate_limit" in err_str.lower():
+#             print(f"⚠️ Tier 2 rate-limited — falling back to Gemini")
+#         else:
+#             print(f"⚠️ Tier 2 error: {e} — falling back to Gemini")
+
+#     # ── Tier 3: Gemini ────────────────────────────────────────────────────
+#     print(f"🔄 Routing to Gemini for: '{user_text}'")
+#     return await _call_gemini(user_text)
+
+
+# def clean_response(text: str) -> str:
+#     text  = text.strip()
+
+#     # Strip any leaked routing tokens just in case
+#     text = re.sub(r'(?i)ROUTE_TO_GEMINI|ROUTE_TO_GENERAL', '', text).strip()
+
+#     lower = text.lower()
+#     for f in [
+#         "based on the data provided,", "based on the provided data,",
+#         "according to the context,",   "according to the live data,",
+#         "based on the live data,",     "based on the condition detail,",
+#     ]:
+#         if lower.startswith(f):
+#             text = text[len(f):].strip()
+#             text = text[0].upper() + text[1:] if text else text
+#             break
+
+#     sentences = re.split(r"(?<=[.!?])\s+", text)
+#     text = " ".join(sentences[:3]).strip()
+#     text = re.sub(r"(?i)\s*(End Output|End of Output|End\.|End)\s*$", "", text).strip()
+#     return text
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # ENDPOINTS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# @app.get("/")
+# async def root():
+#     return {"status": "IMD API v6 is running!"}
+
+
+# @app.get("/weather-stats")
+# async def get_stats(db: Session = Depends(get_db)):
+#     records = (
+#         db.query(WeatherRecord)
+#         .order_by(WeatherRecord.state, WeatherRecord.city)
+#         .all()
+#     )
+#     if not records:
+#         raise HTTPException(status_code=404, detail="No weather data found.")
+#     return [r.to_dict() for r in records]
+
+
+# @app.get("/map-data")
+# async def get_map_data(db: Session = Depends(get_db)):
+#     records = db.query(WeatherRecord).all()
+#     return [
+#         {
+#             "city":             r.city,
+#             "state":            r.state,
+#             "lat":              r.lat,
+#             "lon":              r.lon,
+#             "temperature":      r.temperature,
+#             "condition":        r.condition,
+#             "condition_detail": r.condition_detail,
+#             "weather_code":     r.weather_code,
+#             "is_raining":       r.is_raining,
+#             "is_thunderstorm":  r.is_thunderstorm,
+#             "is_snowfall":      r.is_snowfall,
+#             "is_foggy":         r.is_foggy,
+#             "precipitation":    r.precipitation,
+#             "warning":          r.warning,
+#             "aqi":              r.aqi,
+#             "humidity":         r.humidity,
+#         }
+#         for r in records
+#         if r.lat and r.lon
+#     ]
+
+
+# @app.get("/states")
+# async def get_states(db: Session = Depends(get_db)):
+#     rows = db.query(
+#         WeatherRecord.state,
+#         func.count(WeatherRecord.id).label("city_count"),
+#         func.avg(WeatherRecord.temperature).label("avg_temp"),
+#     ).group_by(WeatherRecord.state).order_by(WeatherRecord.state).all()
+#     return [
+#         {
+#             "state":      row.state,
+#             "city_count": row.city_count,
+#             "avg_temp":   round(row.avg_temp, 1) if row.avg_temp else None,
+#         }
+#         for row in rows
+#     ]
+
+
+# @app.get("/search")
+# async def search_cities(
+#     q: str = FastAPIQuery(..., min_length=1),
+#     db: Session = Depends(get_db),
+# ):
+#     pattern = f"%{q}%"
+#     records = (
+#         db.query(WeatherRecord)
+#         .filter(
+#             or_(
+#                 WeatherRecord.city.ilike(pattern),
+#                 WeatherRecord.state.ilike(pattern),
+#             )
+#         )
+#         .order_by(WeatherRecord.state, WeatherRecord.city)
+#         .all()
+#     )
+#     return [r.to_dict() for r in records]
+
+
+# @app.get("/city/{city_name}")
+# async def get_city(city_name: str, db: Session = Depends(get_db)):
+#     record = (
+#         db.query(WeatherRecord)
+#         .filter(WeatherRecord.city.ilike(f"%{city_name}%"))
+#         .first()
+#     )
+#     if not record:
+#         raise HTTPException(status_code=404, detail=f"City '{city_name}' not found.")
+#     return record.to_dict()
+
+
+# @app.get("/alerts")
+# async def get_alerts(db: Session = Depends(get_db)):
+#     records = (
+#         db.query(WeatherRecord)
+#         .filter(WeatherRecord.warning != "None", WeatherRecord.warning.isnot(None))
+#         .order_by(WeatherRecord.warning)
+#         .all()
+#     )
+#     return [r.to_dict() for r in records]
+
+
+# @app.get("/currently-raining")
+# async def currently_raining(db: Session = Depends(get_db)):
+#     records = db.query(WeatherRecord).filter(
+#         or_(
+#             WeatherRecord.is_raining       == True,
+#             WeatherRecord.is_thunderstorm  == True,
+#         )
+#     ).all()
+#     return [
+#         {
+#             "city":             r.city,
+#             "state":            r.state,
+#             "condition_detail": r.condition_detail,
+#             "precipitation":    r.precipitation,
+#             "is_thunderstorm":  r.is_thunderstorm,
+#         }
+#         for r in records
+#     ]
+
+
+# @app.get("/fetch-logs")
+# async def get_fetch_logs(limit: int = 20, db: Session = Depends(get_db)):
+#     logs = (
+#         db.query(FetchLog)
+#         .order_by(FetchLog.fetched_at.desc())
+#         .limit(limit)
+#         .all()
+#     )
+#     return [l.to_dict() for l in logs]
+
+
+# @app.get("/rag-stats")
+# async def get_rag_stats():
+#     return collection_stats()
+
+
+# @app.get("/lunar")
+# async def get_lunar():
+#     return get_lunar_data()
+
+
+# @app.post("/chat")
+# async def chat_with_weather(query: ChatQuery, db: Session = Depends(get_db)):
+#     user_text = query.text.strip()
+#     if not user_text:
+#         raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+
+#     cities  = find_cities_in_query(user_text, db)
+#     records = (
+#         db.query(WeatherRecord).filter(WeatherRecord.city.in_(cities[:8])).all()
+#         if cities
+#         else db.query(WeatherRecord).all()
+#     )
+
+#     weather_context  = records_to_context(records)
+#     weather_context += get_extended_forecast(user_text, records)
+
+#     rag_hits    = search_bulletins(user_text, n_results=2)
+#     rag_context = format_rag_context(rag_hits, max_chars=500)
+
+#     # Build both tier prompts (tier 2 uses a smarter system prompt)
+#     prompt_tier1 = build_prompt(user_text, weather_context, rag_context, SYSTEM_PROMPT_TIER1)
+#     prompt_tier2 = build_prompt(user_text, weather_context, rag_context, SYSTEM_PROMPT_TIER2)
+
+#     try:
+#         raw      = await ask_llm_async(prompt_tier1, prompt_tier2, user_text)
+#         response = clean_response(raw)
+#     except Exception as e:
+#         print(f"❌ LLM error: {e}")
+#         return {
+#             "cities_detected": cities[:8],
+#             "ai_response":     f"AI temporarily unavailable: {str(e)}",
+#         }
+
+#     lunar = get_lunar_data()
+#     return {
+#         "cities_detected": cities[:8],
+#         "ai_response":     response,
+#         "lunar_snapshot":  lunar,
+#     }
+
+
+# @app.get("/health")
+# async def health(db: Session = Depends(get_db)):
+#     city_count  = db.query(WeatherRecord).count()
+#     state_count = db.query(WeatherRecord.state).distinct().count()
+#     rag         = collection_stats()
+#     lunar       = get_lunar_data()
+#     return {
+#         "status":             "ok",
+#         "db_connected":       True,
+#         "city_count":         city_count,
+#         "state_count":        state_count,
+#         "rag_chunks":         rag["total_chunks"],
+#         "lunar_phase":        lunar["phase_name"],
+#         "lunar_illumination": lunar["illumination_pct"],
+#         "groq_tier1":         GROQ_TIER1,
+#         "groq_tier2":         GROQ_TIER2,
+#         "timestamp":          datetime.now(timezone.utc).isoformat(),
+#     }
+
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# """
+# main.py
+# -------
+# FastAPI backend — v6 (Robust Multi-Model Router)
+
+# Model strategy:
+#   Tier 1 (Groq fast)     : llama-3.1-8b-instant        — huge TPD, very fast
+#   Tier 2 (Groq smart)    : llama-3.3-70b-versatile      — smarter, for tricky/complex questions
+#   Tier 3 (Gemini)        : gemini-2.5-flash             — true general-knowledge fallback only
+
+# Fixes vs v5:
+#   - openai/gpt-oss-20b removed (tiny 200k TPD limit → rate errors)
+#   - gemma2-9b-it removed (decommissioned)
+#   - Smart query classifier: city-only input → weather summary (not ROUTE_TO_GEMINI)
+#   - 429 / rate-limit errors auto-cascade to next tier instead of crashing
+#   - Blank / ROUTE_TO_GEMINI responses detected and re-routed properly
+#   - System prompt hardened: no more leaked routing tokens in user-facing replies
+# """
+
+# import os
+# import re
+# import asyncio
+# import math
+# from datetime import datetime, timedelta, timezone
+# from difflib import get_close_matches
+# import json
+
+# from fastapi import FastAPI, HTTPException, Depends
+# from fastapi import Query as FastAPIQuery
+# from fastapi.middleware.cors import CORSMiddleware
+# from pydantic import BaseModel
+# from sqlalchemy.orm import Session
+# from sqlalchemy import or_, func
+# from dotenv import load_dotenv
+# from contextlib import asynccontextmanager
+
+# from database import get_db, WeatherRecord, FetchLog
+
+# try:
+#     from vector_store import search_bulletins, format_rag_context, collection_stats
+#     RAG_AVAILABLE = True
+# except Exception as e:
+#     print(f"⚠️ RAG unavailable (likely OOM): {e}")
+#     RAG_AVAILABLE = False
+#     def search_bulletins(*a, **kw): return []
+#     def format_rag_context(*a, **kw): return ""
+#     def collection_stats(): return {"total_chunks": 0}
+
+# # ── AI Clients ─────────────────────────────────────────────────────────────
+# from groq import AsyncGroq
+# from google import genai
+
+# load_dotenv()
+
+# groq_client   = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+# gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+# # ── Groq model tiers (in priority order) ──────────────────────────────────
+# # Tier 1: fast + massive token limits → use for all dashboard queries
+# # Tier 2: smarter → escalate only when tier 1 gives a routing signal
+# # NEW
+# GROQ_TIER1 = "qwen/qwen3.6-27b"      # Production, 200K TPD, follows system prompts well
+# GROQ_TIER2 = "openai/gpt-oss-120b"   # Production, 200K TPD, MoE 120B
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # LUNAR PHASE ENGINE
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# _KNOWN_NEW_MOON_TS = datetime(2024, 1, 11, 11, 57, 0, tzinfo=timezone.utc).timestamp()
+# _SYNODIC_MONTH     = 29.530588
+
+
+# def get_lunar_data() -> dict:
+#     now      = datetime.now(timezone.utc)
+#     now_ts   = now.timestamp()
+#     age_days = ((now_ts - _KNOWN_NEW_MOON_TS) / 86400.0) % _SYNODIC_MONTH
+
+#     phase_angle  = (age_days / _SYNODIC_MONTH) * 2 * math.pi
+#     illumination = round((1 - math.cos(phase_angle)) / 2 * 100, 1)
+
+#     if   age_days < 1.0 or age_days >= 28.5: phase_name = "New Moon"
+#     elif age_days < 6.3:                      phase_name = "Waxing Crescent"
+#     elif age_days < 8.3:                      phase_name = "First Quarter"
+#     elif age_days < 13.8:                     phase_name = "Waxing Gibbous"
+#     elif age_days < 15.8:                     phase_name = "Full Moon"
+#     elif age_days < 21.1:                     phase_name = "Waning Gibbous"
+#     elif age_days < 23.1:                     phase_name = "Third Quarter"
+#     else:                                     phase_name = "Waning Crescent"
+
+#     waxing = age_days < (_SYNODIC_MONTH / 2)
+
+#     days_to_next_full = (_SYNODIC_MONTH / 2 - age_days) % _SYNODIC_MONTH
+#     days_to_next_new  = (_SYNODIC_MONTH     - age_days) % _SYNODIC_MONTH
+
+#     next_full_dt = now + timedelta(days=days_to_next_full)
+#     next_new_dt  = now + timedelta(days=days_to_next_new)
+#     last_full_dt = next_full_dt - timedelta(days=_SYNODIC_MONTH)
+#     last_new_dt  = next_new_dt  - timedelta(days=_SYNODIC_MONTH)
+
+#     base_rise_min = 6 * 60
+#     moonrise_min  = int((base_rise_min + age_days * 50) % (24 * 60))
+#     moonset_min   = int((moonrise_min + 12 * 60 + 25)  % (24 * 60))
+#     moonrise_str  = f"{moonrise_min // 60:02d}:{moonrise_min % 60:02d} IST"
+#     moonset_str   = f"{moonset_min   // 60:02d}:{moonset_min  % 60:02d} IST"
+
+#     if illumination >= 90 or illumination <= 10:
+#         tidal_note = "Spring tides likely (strong high/low tides near coasts)"
+#     elif 40 <= illumination <= 60:
+#         tidal_note = "Neap tides (moderate tidal range near coasts)"
+#     else:
+#         tidal_note = "Moderate tidal conditions"
+
+#     if illumination >= 85:
+#         sky_note = "Very bright moon tonight — may wash out faint stars and aurora"
+#     elif illumination >= 50:
+#         sky_note = "Moderately bright moon — some sky glow, stars still visible"
+#     elif illumination <= 15:
+#         sky_note = "Dark skies — excellent for stargazing, meteor showers visible"
+#     else:
+#         sky_note = "Partly lit moon — decent for both stargazing and navigation"
+
+#     folklore = {
+#         "New Moon":        "Traditional planting time for above-ground crops in many Indian agricultural traditions.",
+#         "Waxing Crescent": "Growing phase — auspicious for starting new ventures in some traditions.",
+#         "First Quarter":   "Half-lit moon. Good time for taking action; tides moderating.",
+#         "Waxing Gibbous":  "Nearly full — energy building. Coastal fishing communities often increase activity.",
+#         "Full Moon":       "Purnima. Culturally significant across Hindu, Buddhist, and Jain traditions. Spring tides.",
+#         "Waning Gibbous":  "Post-Purnima phase. Gratitude and reflection in many traditions.",
+#         "Third Quarter":   "Half-lit, waning. Associated with release and clearing in traditional almanacs.",
+#         "Waning Crescent": "Balsamic moon. Rest and preparation before the next cycle.",
+#     }
+
+#     return {
+#         "phase_name":       phase_name,
+#         "age_days":         round(age_days, 2),
+#         "illumination_pct": illumination,
+#         "is_waxing":        waxing,
+#         "moonrise_approx":  moonrise_str,
+#         "moonset_approx":   moonset_str,
+#         "tidal_note":       tidal_note,
+#         "sky_visibility":   sky_note,
+#         "cultural_note":    folklore.get(phase_name, ""),
+#         "last_full_moon":   last_full_dt.strftime("%d %b %Y"),
+#         "next_full_moon":   next_full_dt.strftime("%d %b %Y"),
+#         "last_new_moon":    last_new_dt.strftime("%d %b %Y"),
+#         "next_new_moon":    next_new_dt.strftime("%d %b %Y"),
+#     }
+
+
+# def lunar_context_block() -> str:
+#     d         = get_lunar_data()
+#     direction = "waxing (brightening)" if d["is_waxing"] else "waning (dimming)"
+#     lines = [
+#         "=== LUNAR DATA (current) ===",
+#         f"Current Date/Time: {datetime.now().strftime('%d %b %Y %H:%M Local')}",
+#         f"Phase            : {d['phase_name']} ({direction})",
+#         f"Age              : {d['age_days']} days into the {_SYNODIC_MONTH:.2f}-day cycle",
+#         f"Illumination     : {d['illumination_pct']}%",
+#         f"LAST Full Moon   : {d['last_full_moon']}",
+#         f"NEXT Full Moon   : {d['next_full_moon']}",
+#         f"LAST New Moon    : {d['last_new_moon']}",
+#         f"NEXT New Moon    : {d['next_new_moon']}",
+#         f"Moonrise (approx): {d['moonrise_approx']}",
+#         f"Moonset  (approx): {d['moonset_approx']}",
+#         f"Tidal tendency   : {d['tidal_note']}",
+#         f"Night-sky note   : {d['sky_visibility']}",
+#         f"Cultural context : {d['cultural_note']}",
+#         "============================",
+#     ]
+#     return "\n".join(lines)
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # BACKGROUND WEATHER UPDATER
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# async def updater_loop():
+#     await asyncio.sleep(10)
+#     while True:
+#         try:
+#             from imd_live_updater import update_weather
+#             loop = asyncio.get_event_loop()
+#             await loop.run_in_executor(None, update_weather)
+#             print("✅ Weather update complete")
+#         except Exception as e:
+#             print(f"⚠️ Updater error: {e}")
+#         await asyncio.sleep(1800)
+
+
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     asyncio.create_task(updater_loop())
+#     yield
+
+
+# app = FastAPI(title="IMD Intelligent Dashboard API v6", lifespan=lifespan)
+
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # SYSTEM PROMPTS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# # ── Tier 1 prompt (fast model, dashboard-only) ─────────────────────────────
+# SYSTEM_PROMPT_TIER1 = """You are a concise IMD weather assistant for India. Answer in 1-3 sentences ONLY.
+
+# Rules:
+# - If the user types ONLY a city or place name (e.g. "New Delhi", "Mumbai"), give a friendly weather
+#   summary for that city using the live data — temperature, condition, and any warning.
+# - If asked for hottest/coldest/best city, use the QUICK STATS section.
+# - Use the CONDITION DETAIL field for rain/snow/thunder questions.
+# - Always mention active WARNING values (never ignore them).
+# - For moon/lunar/tide/Purnima/Amavasya/stargazing, use the LUNAR DATA section.
+# - Answer directly. Never say "Based on the data" or "According to the context".
+# - End cleanly. Never output "End Output", "End.", or any meta-commentary.
+# - ONLY if the question is completely outside weather, astronomy, or Indian geography/farming
+#   (e.g. history, politics, coding, recipes), reply with EXACTLY: ROUTE_TO_GENERAL
+#   Do NOT use this token for ANY weather, city, state, rain, temperature, or moon question."""
+
+# # ── Tier 2 prompt (smarter model, for borderline/complex questions) ─────────
+# SYSTEM_PROMPT_TIER2 = """You are a knowledgeable IMD weather and India geography assistant.
+# Answer clearly in 2-4 sentences. You have live weather data and lunar data available.
+
+# - Always use the live data when relevant (weather, temperature, rain, moon, AQI, etc.)
+# - For India geography, farming calendars, climate science, monsoon patterns — answer directly.
+# - For questions with no relation to weather, India, or astronomy, reply: ROUTE_TO_GENERAL
+# - Never output "End Output", "End.", or any meta-commentary."""
+
+
+# class ChatQuery(BaseModel):
+#     text: str
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # QUERY CLASSIFIER — avoid wasting LLM calls on obviously non-general queries
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# _WEATHER_KEYWORDS = {
+#     "weather", "temperature", "temp", "rain", "raining", "rainfall", "humid",
+#     "humidity", "wind", "storm", "thunder", "lightning", "fog", "foggy",
+#     "haze", "hazy", "cloud", "cloudy", "sunny", "sun", "hot", "cold", "warm",
+#     "cool", "heat", "aqi", "air quality", "pollution", "uv", "pressure",
+#     "visibility", "forecast", "tomorrow", "weekend", "today", "tonight",
+#     "warning", "alert", "flood", "cyclone", "monsoon", "drizzle", "snow",
+#     "hail", "sunrise", "sunset", "feels like", "hottest", "coldest", "best",
+#     "worst", "highest", "lowest", "compare", "difference", "which city",
+# }
+
+# _LUNAR_KEYWORDS = {
+#     "moon", "lunar", "purnima", "amavasya", "moonrise", "moonset",
+#     "full moon", "new moon", "crescent", "waxing", "waning", "gibbous",
+#     "tide", "tidal", "stargazing", "stars tonight", "night sky", "moonlight",
+#     "moon phase", "moon tonight", "ekadashi", "chaturthi", "chandra",
+#     "chandrama",
+# }
+
+# def is_dashboard_query(text: str) -> bool:
+#     """Return True if the query is clearly about weather, location, or moon data."""
+#     t = text.lower()
+#     return any(kw in t for kw in _WEATHER_KEYWORDS | _LUNAR_KEYWORDS)
+
+
+# def is_city_only_query(text: str, db: Session) -> bool:
+#     """Return True if the user typed just a city/state name with no action words."""
+#     stripped = text.strip()
+#     # Short query, no question mark or weather verbs → likely "just show me this city"
+#     if len(stripped.split()) <= 4 and "?" not in stripped:
+#         cities = find_cities_in_query(stripped, db)
+#         if cities:
+#             return True
+#     return False
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # CITY + STATE MATCHING
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def get_city_map(db: Session) -> dict:
+#     rows = db.query(WeatherRecord.city).all()
+#     return {r.city.lower(): r.city for r in rows}
+
+
+# def get_state_map(db: Session) -> dict:
+#     rows = db.query(WeatherRecord.city, WeatherRecord.state).all()
+#     state_map = {}
+#     for city, state in rows:
+#         if state:
+#             state_map.setdefault(state.lower(), []).append(city)
+#     return state_map
+
+
+# def find_cities_in_query(user_text: str, db: Session) -> list[str]:
+#     text_lower = user_text.lower()
+#     found      = []
+#     city_map   = get_city_map(db)
+#     state_map  = get_state_map(db)
+
+#     for key, original in city_map.items():
+#         if key in text_lower and original not in found:
+#             found.append(original)
+
+#     for state_key, cities in state_map.items():
+#         if state_key in text_lower:
+#             for c in cities:
+#                 if c not in found:
+#                     found.append(c)
+
+#     if not found:
+#         tokens     = text_lower.split()
+#         candidates = list(city_map.keys())
+#         for token in tokens:
+#             m = get_close_matches(token, candidates, n=1, cutoff=0.82)
+#             if m:
+#                 original = city_map[m[0]]
+#                 if original not in found:
+#                     found.append(original)
+#         for i in range(len(tokens) - 1):
+#             bigram = f"{tokens[i]} {tokens[i+1]}"
+#             m = get_close_matches(bigram, candidates, n=1, cutoff=0.82)
+#             if m:
+#                 original = city_map[m[0]]
+#                 if original not in found:
+#                     found.append(original)
+
+#     return found
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # EXTENDED FORECAST
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def get_extended_forecast(user_text: str, records: list) -> str:
+#     user_lower = user_text.lower()
+#     time_words = [
+#         "tomorrow", "upcoming", "forecast", "predict", "next",
+#         "monday", "tuesday", "wednesday", "thursday", "friday",
+#         "saturday", "sunday", "weekend", "tonight", "today",
+#         "pm", "am", "evening", "morning", "at", "hour", "time"
+#     ]
+
+#     if not any(w in user_lower for w in time_words):
+#         return ""
+
+#     import requests
+#     forecast_text = "\n\n=== EXTENDED & HOURLY FORECAST ===\n"
+
+#     for r in records[:2]:
+#         if not r.lat or not r.lon:
+#             continue
+#         try:
+#             resp = requests.get(
+#                 "https://api.open-meteo.com/v1/forecast",
+#                 params={
+#                     "latitude":   r.lat,
+#                     "longitude":  r.lon,
+#                     "daily":      ["temperature_2m_max", "temperature_2m_min",
+#                                    "precipitation_probability_max"],
+#                     "hourly":     ["temperature_2m", "precipitation_probability"],
+#                     "timezone":   "Asia/Kolkata",
+#                     "forecast_days": 7
+#                 },
+#                 timeout=4
+#             ).json()
+
+#             daily  = resp.get("daily", {})
+#             hourly = resp.get("hourly", {})
+
+#             forecast_text += f"\n{r.city} Daily Forecast:\n"
+#             times_d = daily.get("time", [])
+#             highs   = daily.get("temperature_2m_max", [])
+#             lows    = daily.get("temperature_2m_min", [])
+#             pops_d  = daily.get("precipitation_probability_max", [])
+
+#             for i in range(1, min(5, len(times_d))):
+#                 date_obj = datetime.strptime(times_d[i], "%Y-%m-%d")
+#                 day_name = date_obj.strftime("%A")
+#                 forecast_text += f"- {day_name}: High {highs[i]}°C, Low {lows[i]}°C, Rain {pops_d[i]}%\n"
+
+#             forecast_text += f"\n{r.city} Hourly Forecast:\n"
+#             times_h = hourly.get("time", [])
+#             temps_h = hourly.get("temperature_2m", [])
+#             pops_h  = hourly.get("precipitation_probability", [])
+
+#             ist_now          = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+#             current_hour_str = ist_now.strftime("%Y-%m-%dT%H:00")
+
+#             start_idx = 0
+#             for idx, t in enumerate(times_h):
+#                 if t >= current_hour_str:
+#                     start_idx = idx
+#                     break
+
+#             hourly_snippets = []
+#             for i in range(start_idx, min(start_idx + 12, len(times_h))):
+#                 t_obj         = datetime.strptime(times_h[i], "%Y-%m-%dT%H:%M")
+#                 friendly_time = t_obj.strftime("%I%p").lstrip("0")
+#                 hourly_snippets.append(
+#                     f"{friendly_time}: {temps_h[i]}°C (Rain {pops_h[i]}%)"
+#                 )
+
+#             forecast_text += " | ".join(hourly_snippets) + "\n"
+
+#         except Exception:
+#             continue
+
+#     return forecast_text
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # CONTEXT BUILDERS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def records_to_context(records: list) -> str:
+#     if not records:
+#         return "No data available."
+
+#     lines = []
+
+#     if len(records) > 5:
+#         hottest   = max(records, key=lambda r: r.temperature)
+#         coldest   = min(records, key=lambda r: r.temperature)
+#         worst_aqi = max(
+#             (r for r in records if r.aqi is not None),
+#             key=lambda r: r.aqi,
+#             default=None,
+#         )
+
+#         lines.append("=== QUICK STATS (Use this for highest/lowest questions) ===")
+#         lines.append(f"Hottest City right now: {hottest.city} at {hottest.temperature}°C")
+#         lines.append(f"Coldest City right now: {coldest.city} at {coldest.temperature}°C")
+#         if worst_aqi:
+#             lines.append(f"Worst Air Quality: {worst_aqi.city} with AQI {worst_aqi.aqi}")
+#         lines.append("=========================================================\n")
+
+#     for r in records[:15]:
+#         sr_clean = (
+#             r.sunrise.split("T")[-1][:5]
+#             if r.sunrise and "T" in r.sunrise
+#             else (r.sunrise or "N/A")
+#         )
+#         ss_clean = (
+#             r.sunset.split("T")[-1][:5]
+#             if r.sunset and "T" in r.sunset
+#             else (r.sunset or "N/A")
+#         )
+
+#         lines.append(
+#             f"- {r.city} ({r.state}): "
+#             f"Temp={r.temperature}°C, FeelsLike={r.feels_like}°C, "
+#             f"High={r.high}°C, Low={r.low}°C, Humidity={r.humidity}%, "
+#             f"Condition={r.condition}, "
+#             f"CONDITION DETAIL='{r.condition_detail}', "
+#             f"Precipitation={r.precipitation}mm, "
+#             f"IsRaining={r.is_raining}, IsThunderstorm={r.is_thunderstorm}, "
+#             f"IsSnow={r.is_snowfall}, IsFoggy={r.is_foggy}, "
+#             f"Wind={r.wind_speed}km/h {r.wind_dir}, "
+#             f"Pressure={r.pressure}hPa, Visibility={r.visibility}km, "
+#             f"UV={r.uv_index}, AQI={r.aqi}, Warning={r.warning}, "
+#             f"Sunrise={sr_clean}, Sunset={ss_clean}"
+#         )
+
+#         if r.forecast_json:
+#             try:
+#                 days = json.loads(r.forecast_json)
+#                 forecast_lines = ", ".join(
+#                     f"{d['day']}: {d.get('text','?')} H:{d.get('high','?')}°C L:{d.get('low','?')}°C"
+#                     for d in days
+#                 )
+#                 lines.append(f"  7-DAY FORECAST: {forecast_lines}")
+#             except Exception:
+#                 pass
+
+#     return "\n".join(lines)
+
+
+# def build_prompt(user_text: str, weather_context: str, rag_context: str,
+#                  system_prompt: str) -> str:
+#     current_time = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+#     prompt  = f"{system_prompt}\nCURRENT DATE: {current_time}\n\n"
+#     prompt += f"LIVE DATA:\n{weather_context}\n\n"
+#     prompt += f"{lunar_context_block()}\n\n"
+#     if rag_context:
+#         prompt += f"IMD SAFETY CONTEXT (use only if relevant):\n{rag_context}\n\n"
+#     prompt += f"QUESTION: {user_text}\nANSWER (1-3 sentences):"
+#     return prompt
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # MULTI-TIER LLM ROUTER
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# def _is_route_signal(text: str) -> bool:
+#     """Check if the LLM returned a routing token instead of an answer."""
+#     t = text.strip().upper()
+#     return "ROUTE_TO_GEMINI" in t or "ROUTE_TO_GENERAL" in t or len(t) < 5
+
+
+
+# # async def _call_groq(model: str, prompt: str, max_tokens: int = 200) -> str:
+# #     """
+# #     Call Groq with a given model. Raises on error (caller handles retry).
+ 
+# #     Special handling for gpt-oss-120b:
+# #       - It's a reasoning model; without reasoning_effort it may emit blank output.
+# #       - We set reasoning_effort="low" for speed and bump min tokens to 300.
+# #       - The response still comes through choices[0].message.content normally.
+# #     """
+# #     kwargs = dict(
+# #         model=model,
+# #         messages=[{"role": "user", "content": prompt}],
+# #         max_tokens=max(max_tokens, 300) if "gpt-oss" in model else max_tokens,
+# #         temperature=0.2,
+# #     )
+# #     # gpt-oss models need reasoning_effort or they produce thinking-only blank output
+# #     if "gpt-oss" in model:
+# #         kwargs["reasoning_effort"] = "low"
+ 
+# #     response = await groq_client.chat.completions.create(**kwargs)
+ 
+# #     content = response.choices[0].message.content
+# #     # gpt-oss-120b sometimes returns None content with only reasoning tokens used
+# #     # (happens when max_tokens is too low even with reasoning_effort set)
+# #     if not content or not content.strip():
+# #         raise ValueError(f"Empty content from {model} — likely token budget exhausted")
+# #     return content.strip()
+# async def _call_groq(model: str, prompt: str, max_tokens: int = 200) -> str:
+#     kwargs = dict(
+#         model=model,
+#         messages=[{"role": "user", "content": prompt}],
+#         max_tokens=max_tokens,
+#         temperature=0.2,
+#     )
+
+#     # gpt-oss-120b: reasoning model, needs reasoning_effort + token headroom
+#     if "gpt-oss" in model:
+#         kwargs["max_tokens"] = max(max_tokens, 300)
+#         kwargs["reasoning_effort"] = "low"
+
+#     # qwen3: disable chain-of-thought entirely via API param
+#     if "qwen" in model:
+#         kwargs["reasoning_effort"] = "none"
+
+#     response = await groq_client.chat.completions.create(**kwargs)
+
+#     content = response.choices[0].message.content
+#     if not content or not content.strip():
+#         raise ValueError(f"Empty content from {model} — likely token budget exhausted")
+#     return content.strip()
+ 
+
+
+
+# async def _call_gemini(user_text: str) -> str:
+#     """Call Gemini for true general-knowledge questions."""
+#     gemini_prompt = (
+#         "You are an expert meteorologist, astronomer, and geographer assisting users on "
+#         "an Indian weather dashboard. "
+#         "CRITICAL: Always assume Indian context (states, farming, geography, festivals, etc.) "
+#         "UNLESS the user explicitly names another country. "
+#         "Answer accurately and concisely in 2-4 sentences.\n\n"
+#         f"Question: {user_text}"
+#     )
+#     try:
+#         gemini_response = await asyncio.get_event_loop().run_in_executor(
+#             None,
+#             lambda: gemini_client.models.generate_content(
+#                 model="gemini-2.5-flash",
+#                 contents=gemini_prompt,
+#             ),
+#         )
+#         return gemini_response.text.strip()
+#     except Exception as gemini_err:
+#         return (
+#             "My general knowledge module is currently busy. "
+#             "Please try again in a moment, or ask me a live weather question!"
+#         )
+
+
+# async def ask_llm_async(
+#     prompt_tier1: str,
+#     prompt_tier2: str,
+#     user_text: str,
+# ) -> str:
+#     """
+#     Three-tier routing:
+#       1. Groq qwen/qwen3.6-27b (fast instruct, great system-prompt compliance)
+#          → if routing signal or 429, escalate
+#       2. Groq openai/gpt-oss-120b (MoE 120B, reasoning_effort=low)
+#          → if routing signal or 429, escalate
+#       3. Gemini 2.5 Flash (general knowledge fallback)
+#     """
+ 
+#     # ── Tier 1: Qwen 3.6 27B ─────────────────────────────────────────────
+#     try:
+#         reply = await _call_groq(GROQ_TIER1, prompt_tier1)
+#         print(f"✅ Tier 1 ({GROQ_TIER1}) answered")
+#         if not _is_route_signal(reply):
+#             return reply
+#         print(f"↗️  Tier 1 routing signal — escalating to Tier 2")
+#     except Exception as e:
+#         err_str = str(e)
+#         if "429" in err_str or "rate_limit" in err_str.lower():
+#             print(f"⚠️ Tier 1 rate-limited — trying Tier 2")
+#         else:
+#             print(f"⚠️ Tier 1 error: {e} — trying Tier 2")
+ 
+#     # ── Tier 2: GPT-OSS 120B ─────────────────────────────────────────────
+#     try:
+#         reply = await _call_groq(GROQ_TIER2, prompt_tier2, max_tokens=400)
+#         print(f"✅ Tier 2 ({GROQ_TIER2}) answered")
+#         if not _is_route_signal(reply):
+#             return reply
+#         print(f"↗️  Tier 2 routing signal — escalating to Gemini")
+#     except Exception as e:
+#         err_str = str(e)
+#         if "429" in err_str or "rate_limit" in err_str.lower():
+#             print(f"⚠️ Tier 2 rate-limited — falling back to Gemini")
+#         else:
+#             print(f"⚠️ Tier 2 error: {e} — falling back to Gemini")
+ 
+#     # ── Tier 3: Gemini ────────────────────────────────────────────────────
+#     print(f"🔄 Routing to Gemini for: '{user_text}'")
+#     return await _call_gemini(user_text)
+
+
+
+# # def clean_response(text: str) -> str:
+# #     text = text.strip()
+
+# #     # Strip Qwen3 <think>...</think> blocks (single-line or multiline)
+# #     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+# #     # Strip any leaked routing tokens just in case
+# #     text = re.sub(r'(?i)ROUTE_TO_GEMINI|ROUTE_TO_GENERAL', '', text).strip()
+
+# #     lower = text.lower()
+# #     for f in [
+# #         "based on the data provided,", "based on the provided data,",
+# #         "according to the context,",   "according to the live data,",
+# #         "based on the live data,",     "based on the condition detail,",
+# #     ]:
+# #         if lower.startswith(f):
+# #             text = text[len(f):].strip()
+# #             text = text[0].upper() + text[1:] if text else text
+# #             break
+
+# #     sentences = re.split(r"(?<=[.!?])\s+", text)
+# #     text = " ".join(sentences[:3]).strip()
+# #     text = re.sub(r"(?i)\s*(End Output|End of Output|End\.|End)\s*$", "", text).strip()
+# #     return text
+# def clean_response(text: str) -> str:
+#     text = text.strip()
+
+#     # Strip <think>...</think> blocks — handles multiline, nested whitespace, partial leaks
+#     text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+#     # Also catch bare opening tag with no closing tag (truncated think block)
+#     text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE).strip()
+
+#     # Strip leaked routing tokens
+#     text = re.sub(r'(?i)ROUTE_TO_GEMINI|ROUTE_TO_GENERAL', '', text).strip()
+
+#     lower = text.lower()
+#     for f in [
+#         "based on the data provided,", "based on the provided data,",
+#         "according to the context,",   "according to the live data,",
+#         "based on the live data,",     "based on the condition detail,",
+#     ]:
+#         if lower.startswith(f):
+#             text = text[len(f):].strip()
+#             text = text[0].upper() + text[1:] if text else text
+#             break
+
+#     sentences = re.split(r"(?<=[.!?])\s+", text)
+#     text = " ".join(sentences[:3]).strip()
+#     text = re.sub(r"(?i)\s*(End Output|End of Output|End\.|End)\s*$", "", text).strip()
+#     return text
+
+
+# # ═══════════════════════════════════════════════════════════════════════════
+# # ENDPOINTS
+# # ═══════════════════════════════════════════════════════════════════════════
+
+# @app.get("/")
+# async def root():
+#     return {"status": "IMD API v6 is running!"}
+
+
+# @app.get("/weather-stats")
+# async def get_stats(db: Session = Depends(get_db)):
+#     records = (
+#         db.query(WeatherRecord)
+#         .order_by(WeatherRecord.state, WeatherRecord.city)
+#         .all()
+#     )
+#     if not records:
+#         raise HTTPException(status_code=404, detail="No weather data found.")
+#     return [r.to_dict() for r in records]
+
+
+# @app.get("/map-data")
+# async def get_map_data(db: Session = Depends(get_db)):
+#     records = db.query(WeatherRecord).all()
+#     return [
+#         {
+#             "city":             r.city,
+#             "state":            r.state,
+#             "lat":              r.lat,
+#             "lon":              r.lon,
+#             "temperature":      r.temperature,
+#             "condition":        r.condition,
+#             "condition_detail": r.condition_detail,
+#             "weather_code":     r.weather_code,
+#             "is_raining":       r.is_raining,
+#             "is_thunderstorm":  r.is_thunderstorm,
+#             "is_snowfall":      r.is_snowfall,
+#             "is_foggy":         r.is_foggy,
+#             "precipitation":    r.precipitation,
+#             "warning":          r.warning,
+#             "aqi":              r.aqi,
+#             "humidity":         r.humidity,
+#         }
+#         for r in records
+#         if r.lat and r.lon
+#     ]
+
+
+# @app.get("/states")
+# async def get_states(db: Session = Depends(get_db)):
+#     rows = db.query(
+#         WeatherRecord.state,
+#         func.count(WeatherRecord.id).label("city_count"),
+#         func.avg(WeatherRecord.temperature).label("avg_temp"),
+#     ).group_by(WeatherRecord.state).order_by(WeatherRecord.state).all()
+#     return [
+#         {
+#             "state":      row.state,
+#             "city_count": row.city_count,
+#             "avg_temp":   round(row.avg_temp, 1) if row.avg_temp else None,
+#         }
+#         for row in rows
+#     ]
+
+
+# @app.get("/search")
+# async def search_cities(
+#     q: str = FastAPIQuery(..., min_length=1),
+#     db: Session = Depends(get_db),
+# ):
+#     pattern = f"%{q}%"
+#     records = (
+#         db.query(WeatherRecord)
+#         .filter(
+#             or_(
+#                 WeatherRecord.city.ilike(pattern),
+#                 WeatherRecord.state.ilike(pattern),
+#             )
+#         )
+#         .order_by(WeatherRecord.state, WeatherRecord.city)
+#         .all()
+#     )
+#     return [r.to_dict() for r in records]
+
+
+# @app.get("/city/{city_name}")
+# async def get_city(city_name: str, db: Session = Depends(get_db)):
+#     record = (
+#         db.query(WeatherRecord)
+#         .filter(WeatherRecord.city.ilike(f"%{city_name}%"))
+#         .first()
+#     )
+#     if not record:
+#         raise HTTPException(status_code=404, detail=f"City '{city_name}' not found.")
+#     return record.to_dict()
+
+
+# @app.get("/alerts")
+# async def get_alerts(db: Session = Depends(get_db)):
+#     records = (
+#         db.query(WeatherRecord)
+#         .filter(WeatherRecord.warning != "None", WeatherRecord.warning.isnot(None))
+#         .order_by(WeatherRecord.warning)
+#         .all()
+#     )
+#     return [r.to_dict() for r in records]
+
+
+# @app.get("/currently-raining")
+# async def currently_raining(db: Session = Depends(get_db)):
+#     records = db.query(WeatherRecord).filter(
+#         or_(
+#             WeatherRecord.is_raining       == True,
+#             WeatherRecord.is_thunderstorm  == True,
+#         )
+#     ).all()
+#     return [
+#         {
+#             "city":             r.city,
+#             "state":            r.state,
+#             "condition_detail": r.condition_detail,
+#             "precipitation":    r.precipitation,
+#             "is_thunderstorm":  r.is_thunderstorm,
+#         }
+#         for r in records
+#     ]
+
+
+# @app.get("/fetch-logs")
+# async def get_fetch_logs(limit: int = 20, db: Session = Depends(get_db)):
+#     logs = (
+#         db.query(FetchLog)
+#         .order_by(FetchLog.fetched_at.desc())
+#         .limit(limit)
+#         .all()
+#     )
+#     return [l.to_dict() for l in logs]
+
+
+# @app.get("/rag-stats")
+# async def get_rag_stats():
+#     return collection_stats()
+
+
+# @app.get("/lunar")
+# async def get_lunar():
+#     return get_lunar_data()
+
+
+# @app.post("/chat")
+# async def chat_with_weather(query: ChatQuery, db: Session = Depends(get_db)):
+#     user_text = query.text.strip()
+#     if not user_text:
+#         raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+
+#     cities  = find_cities_in_query(user_text, db)
+#     records = (
+#         db.query(WeatherRecord).filter(WeatherRecord.city.in_(cities[:8])).all()
+#         if cities
+#         else db.query(WeatherRecord).all()
+#     )
+
+#     weather_context  = records_to_context(records)
+#     weather_context += get_extended_forecast(user_text, records)
+
+#     rag_hits    = search_bulletins(user_text, n_results=2)
+#     rag_context = format_rag_context(rag_hits, max_chars=500)
+
+#     # Build both tier prompts (tier 2 uses a smarter system prompt)
+#     prompt_tier1 = build_prompt(user_text, weather_context, rag_context, SYSTEM_PROMPT_TIER1)
+#     prompt_tier2 = build_prompt(user_text, weather_context, rag_context, SYSTEM_PROMPT_TIER2)
+
+#     try:
+#         raw      = await ask_llm_async(prompt_tier1, prompt_tier2, user_text)
+#         response = clean_response(raw)
+#     except Exception as e:
+#         print(f"❌ LLM error: {e}")
+#         return {
+#             "cities_detected": cities[:8],
+#             "ai_response":     f"AI temporarily unavailable: {str(e)}",
+#         }
+
+#     lunar = get_lunar_data()
+#     return {
+#         "cities_detected": cities[:8],
+#         "ai_response":     response,
+#         "lunar_snapshot":  lunar,
+#     }
+
+
+# @app.get("/health")
+# async def health(db: Session = Depends(get_db)):
+#     city_count  = db.query(WeatherRecord).count()
+#     state_count = db.query(WeatherRecord.state).distinct().count()
+#     rag         = collection_stats()
+#     lunar       = get_lunar_data()
+#     return {
+#         "status":             "ok",
+#         "db_connected":       True,
+#         "city_count":         city_count,
+#         "state_count":        state_count,
+#         "rag_chunks":         rag["total_chunks"],
+#         "lunar_phase":        lunar["phase_name"],
+#         "lunar_illumination": lunar["illumination_pct"],
+#         "groq_tier1":         GROQ_TIER1,
+#         "groq_tier2":         GROQ_TIER2,
+#         "timestamp":          datetime.now(timezone.utc).isoformat(),
+#     }
+
+
+# if __name__ == "__main__":
+#     import uvicorn
+#     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+
+
+
+
+
+
+
+
+
+
 """
 main.py
 -------
-FastAPI backend — v5 (Dual-LLM Router)
-Upgraded: Groq (GPT OSS 20B) as primary fast router + Gemini as fallback for general knowledge.
+FastAPI backend — v6 (Robust Multi-Model Router with Adaptive Response Length)
+
+Model strategy:
+  Tier 1 (Groq fast)     : qwen/qwen3.6-27b            — huge TPD, very fast
+  Tier 2 (Groq smart)    : openai/gpt-oss-120b         — smarter, for tricky/complex questions
+  Tier 3 (Gemini)        : gemini-2.5-flash             — true general-knowledge fallback only
+
+Fixes vs v5:
+  - Dynamic complexity classifier: "short" (1-2 sentences) vs "long" (3-5 sentences)
+  - Adaptive max_tokens depending on question complexity to prevent cut-offs.
+  - Strips leaked <think> tokens and routing signals gracefully.
 """
 
 import os
@@ -23,6 +2451,7 @@ from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 
 from database import get_db, WeatherRecord, FetchLog
+
 try:
     from vector_store import search_bulletins, format_rag_context, collection_stats
     RAG_AVAILABLE = True
@@ -33,15 +2462,18 @@ except Exception as e:
     def format_rag_context(*a, **kw): return ""
     def collection_stats(): return {"total_chunks": 0}
 
-# ── AI Clients: Groq (primary) + Gemini (fallback) ────────────────────────
+# ── AI Clients ─────────────────────────────────────────────────────────────
 from groq import AsyncGroq
 from google import genai
 
 load_dotenv()
 
-# Initialize both AI clients
-groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+groq_client   = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+# ── Groq model tiers (in priority order) ──────────────────────────────────
+GROQ_TIER1 = "qwen/qwen3.6-27b"      # Production, 200K TPD, follows system prompts well
+GROQ_TIER2 = "openai/gpt-oss-120b"   # Production, 200K TPD, MoE 120B
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LUNAR PHASE ENGINE
@@ -50,19 +2482,15 @@ gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 _KNOWN_NEW_MOON_TS = datetime(2024, 1, 11, 11, 57, 0, tzinfo=timezone.utc).timestamp()
 _SYNODIC_MONTH     = 29.530588
 
+
 def get_lunar_data() -> dict:
-    """
-    Compute current lunar phase, illumination, age, and explicit past/future target dates.
-    """
-    now = datetime.now(timezone.utc)
-    now_ts = now.timestamp()
+    now      = datetime.now(timezone.utc)
+    now_ts   = now.timestamp()
     age_days = ((now_ts - _KNOWN_NEW_MOON_TS) / 86400.0) % _SYNODIC_MONTH
 
-    # Illumination — (1 - cos(phase_angle)) / 2
-    phase_angle = (age_days / _SYNODIC_MONTH) * 2 * math.pi
+    phase_angle  = (age_days / _SYNODIC_MONTH) * 2 * math.pi
     illumination = round((1 - math.cos(phase_angle)) / 2 * 100, 1)
 
-    # Phase name
     if   age_days < 1.0 or age_days >= 28.5: phase_name = "New Moon"
     elif age_days < 6.3:                      phase_name = "Waxing Crescent"
     elif age_days < 8.3:                      phase_name = "First Quarter"
@@ -74,22 +2502,19 @@ def get_lunar_data() -> dict:
 
     waxing = age_days < (_SYNODIC_MONTH / 2)
 
-    # ─── EXACT CALENDAR MATH FOR LLM ───
     days_to_next_full = (_SYNODIC_MONTH / 2 - age_days) % _SYNODIC_MONTH
-    days_to_next_new  = (_SYNODIC_MONTH - age_days) % _SYNODIC_MONTH
+    days_to_next_new  = (_SYNODIC_MONTH     - age_days) % _SYNODIC_MONTH
 
     next_full_dt = now + timedelta(days=days_to_next_full)
     next_new_dt  = now + timedelta(days=days_to_next_new)
-
     last_full_dt = next_full_dt - timedelta(days=_SYNODIC_MONTH)
-    last_new_dt  = next_new_dt - timedelta(days=_SYNODIC_MONTH)
+    last_new_dt  = next_new_dt  - timedelta(days=_SYNODIC_MONTH)
 
-    # Moonrise/moonset rough estimate
     base_rise_min = 6 * 60
     moonrise_min  = int((base_rise_min + age_days * 50) % (24 * 60))
-    moonset_min   = int((moonrise_min + 12 * 60 + 25) % (24 * 60))
+    moonset_min   = int((moonrise_min + 12 * 60 + 25)  % (24 * 60))
     moonrise_str  = f"{moonrise_min // 60:02d}:{moonrise_min % 60:02d} IST"
-    moonset_str   = f"{moonset_min   // 60:02d}:{moonset_min   % 60:02d} IST"
+    moonset_str   = f"{moonset_min   // 60:02d}:{moonset_min  % 60:02d} IST"
 
     if illumination >= 90 or illumination <= 10:
         tidal_note = "Spring tides likely (strong high/low tides near coasts)"
@@ -119,27 +2544,24 @@ def get_lunar_data() -> dict:
     }
 
     return {
-        "phase_name":        phase_name,
-        "age_days":          round(age_days, 2),
-        "illumination_pct":  illumination,
-        "is_waxing":         waxing,
-        "moonrise_approx":   moonrise_str,
-        "moonset_approx":    moonset_str,
-        "tidal_note":        tidal_note,
-        "sky_visibility":    sky_note,
-        "cultural_note":     folklore.get(phase_name, ""),
-        "last_full_moon":    last_full_dt.strftime("%d %b %Y"),
-        "next_full_moon":    next_full_dt.strftime("%d %b %Y"),
-        "last_new_moon":     last_new_dt.strftime("%d %b %Y"),
-        "next_new_moon":     next_new_dt.strftime("%d %b %Y"),
+        "phase_name":       phase_name,
+        "age_days":         round(age_days, 2),
+        "illumination_pct": illumination,
+        "is_waxing":        waxing,
+        "moonrise_approx":  moonrise_str,
+        "moonset_approx":   moonset_str,
+        "tidal_note":       tidal_note,
+        "sky_visibility":   sky_note,
+        "cultural_note":    folklore.get(phase_name, ""),
+        "last_full_moon":   last_full_dt.strftime("%d %b %Y"),
+        "next_full_moon":   next_full_dt.strftime("%d %b %Y"),
+        "last_new_moon":    last_new_dt.strftime("%d %b %Y"),
+        "next_new_moon":    next_new_dt.strftime("%d %b %Y"),
     }
 
 
 def lunar_context_block() -> str:
-    """
-    Returns an explicitly dated, LLM-friendly string block.
-    """
-    d = get_lunar_data()
+    d         = get_lunar_data()
     direction = "waxing (brightening)" if d["is_waxing"] else "waning (dimming)"
     lines = [
         "=== LUNAR DATA (current) ===",
@@ -166,7 +2588,7 @@ def lunar_context_block() -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def updater_loop():
-    await asyncio.sleep(10)  # Wait for app to fully start first
+    await asyncio.sleep(10)
     while True:
         try:
             from imd_live_updater import update_weather
@@ -175,14 +2597,16 @@ async def updater_loop():
             print("✅ Weather update complete")
         except Exception as e:
             print(f"⚠️ Updater error: {e}")
-        await asyncio.sleep(1800)  # 30 minutes
+        await asyncio.sleep(1800)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(updater_loop())
     yield
 
-app = FastAPI(title="IMD Intelligent Dashboard API v5", lifespan=lifespan)
+
+app = FastAPI(title="IMD Intelligent Dashboard API v6", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -192,25 +2616,109 @@ app.add_middleware(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SYSTEM PROMPT
+# SYSTEM PROMPTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = """You are a concise IMD weather assistant for India. Answer in 1-3 sentences ONLY.
+SYSTEM_PROMPT_TIER1 = """You are a concise IMD weather assistant for India.
+
 Rules:
-- If asked for the highest, lowest, hottest, or coldest city, check the QUICK STATS section first.
-- Use CONDITION DETAIL field for "is it raining / snowing / thundering" questions.
-- Use WARNING field — always mention active warnings.
-- For lunar / moon / tide / Purnima / Amavasya / stargazing questions, use the LUNAR DATA section.
-- Moonrise and moonset times in the LUNAR DATA are approximate estimates based on phase age.
-- Never say "Based on the data" or "According to the context". Answer directly.
-- End your answer cleanly. NEVER output phrases like "End Output" or "End.".
-- CRITICAL: If the question CANNOT be answered using the specific dashboard data provided (e.g. general
-  science, history, geography, or astronomy not covered by the live data), do NOT guess or hallucinate.
-  Instead, reply with EXACTLY this token and nothing else: ROUTE_TO_GEMINI"""
+- If the user types ONLY a city or place name (e.g. "New Delhi", "Mumbai"), give a friendly weather
+  summary for that city using the live data — temperature, condition, and any warning.
+- If asked for hottest/coldest/best city, use the QUICK STATS section.
+- Use the CONDITION DETAIL field for rain/snow/thunder questions.
+- Always mention active WARNING values (never ignore them).
+- For moon/lunar/tide/Purnima/Amavasya/stargazing, use the LUNAR DATA section.
+- Answer directly. Never say "Based on the data" or "According to the context".
+- End cleanly. Never output "End Output", "End.", or any meta-commentary.
+- Follow the LENGTH INSTRUCTION exactly for how long your answer should be.
+- ONLY if the question is completely outside weather, astronomy, or Indian geography/farming
+  (e.g. history, politics, coding, recipes), reply with EXACTLY: ROUTE_TO_GENERAL
+  Do NOT use this token for ANY weather, city, state, rain, temperature, or moon question."""
+
+SYSTEM_PROMPT_TIER2 = """You are a knowledgeable IMD weather and India geography assistant.
+You have live weather data and lunar data available.
+
+- Always use the live data when relevant (weather, temperature, rain, moon, AQI, etc.)
+- For India geography, farming calendars, climate science, monsoon patterns — answer directly.
+- Follow the LENGTH INSTRUCTION exactly for how long your answer should be.
+- For questions with no relation to weather, India, or astronomy, reply: ROUTE_TO_GENERAL
+- Never output "End Output", "End.", or any meta-commentary."""
 
 
 class ChatQuery(BaseModel):
     text: str
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# QUERY CLASSIFIER
+# ═══════════════════════════════════════════════════════════════════════════
+
+_WEATHER_KEYWORDS = {
+    "weather", "temperature", "temp", "rain", "raining", "rainfall", "humid",
+    "humidity", "wind", "storm", "thunder", "lightning", "fog", "foggy",
+    "haze", "hazy", "cloud", "cloudy", "sunny", "sun", "hot", "cold", "warm",
+    "cool", "heat", "aqi", "air quality", "pollution", "uv", "pressure",
+    "visibility", "forecast", "tomorrow", "weekend", "today", "tonight",
+    "warning", "alert", "flood", "cyclone", "monsoon", "drizzle", "snow",
+    "hail", "sunrise", "sunset", "feels like", "hottest", "coldest", "best",
+    "worst", "highest", "lowest", "compare", "difference", "which city",
+}
+
+_LUNAR_KEYWORDS = {
+    "moon", "lunar", "purnima", "amavasya", "moonrise", "moonset",
+    "full moon", "new moon", "crescent", "waxing", "waning", "gibbous",
+    "tide", "tidal", "stargazing", "stars tonight", "night sky", "moonlight",
+    "moon phase", "moon tonight", "ekadashi", "chaturthi", "chandra",
+    "chandrama",
+}
+
+def is_dashboard_query(text: str) -> bool:
+    t = text.lower()
+    return any(kw in t for kw in _WEATHER_KEYWORDS | _LUNAR_KEYWORDS)
+
+def is_city_only_query(text: str, db: Session) -> bool:
+    stripped = text.strip()
+    if len(stripped.split()) <= 4 and "?" not in stripped:
+        cities = find_cities_in_query(stripped, db)
+        if cities:
+            return True
+    return False
+
+# ═══════════════════════════════════════════════════════════════════════════
+# RESPONSE LENGTH CLASSIFIER
+# ═══════════════════════════════════════════════════════════════════════════
+
+_COMPLEX_KEYWORDS = {
+    # Multi-part / comparison questions
+    "compare", "difference", "vs", "versus", "which is better", "which city",
+    "all cities", "every city", "list", "multiple",
+    # Explanations / education
+    "why", "how does", "explain", "what causes", "what is", "tell me about",
+    "what are", "describe", "history of", "meaning of",
+    # Forecasts needing detail
+    "week", "weekly", "7 day", "next few days", "forecast", "upcoming",
+    "tomorrow", "this weekend", "plan", "should i",
+    # Farming / cultural / advisory
+    "farming", "crop", "harvest", "sow", "plant", "monsoon season",
+    "best time", "good time", "purnima", "amavasya", "festival",
+    # Science / climate
+    "climate", "monsoon", "cyclone", "hurricane", "pattern", "season",
+    "global warming", "humidity effect", "uv index", "air quality effect",
+}
+
+def classify_response_length(text: str) -> str:
+    """
+    Returns 'short' or 'long' based on question complexity.
+    Short  → 1-2 sentences  (simple facts, single-city lookups, yes/no)
+    Long   → 3-5 sentences  (comparisons, explanations, forecasts, advisories)
+    """
+    t = text.lower()
+    if any(kw in t for kw in _COMPLEX_KEYWORDS):
+        return "long"
+    # Questions with "?" after complex content are usually long
+    if "?" in t and len(t.split()) > 6:
+        return "long"
+    return "short"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CITY + STATE MATCHING
@@ -263,6 +2771,7 @@ def find_cities_in_query(user_text: str, db: Session) -> list[str]:
 
     return found
 
+
 # ═══════════════════════════════════════════════════════════════════════════
 # EXTENDED FORECAST
 # ═══════════════════════════════════════════════════════════════════════════
@@ -289,11 +2798,12 @@ def get_extended_forecast(user_text: str, records: list) -> str:
             resp = requests.get(
                 "https://api.open-meteo.com/v1/forecast",
                 params={
-                    "latitude": r.lat,
-                    "longitude": r.lon,
-                    "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_probability_max"],
-                    "hourly": ["temperature_2m", "precipitation_probability"],
-                    "timezone": "Asia/Kolkata",
+                    "latitude":   r.lat,
+                    "longitude":  r.lon,
+                    "daily":      ["temperature_2m_max", "temperature_2m_min",
+                                   "precipitation_probability_max"],
+                    "hourly":     ["temperature_2m", "precipitation_probability"],
+                    "timezone":   "Asia/Kolkata",
                     "forecast_days": 7
                 },
                 timeout=4
@@ -330,8 +2840,10 @@ def get_extended_forecast(user_text: str, records: list) -> str:
             hourly_snippets = []
             for i in range(start_idx, min(start_idx + 12, len(times_h))):
                 t_obj         = datetime.strptime(times_h[i], "%Y-%m-%dT%H:%M")
-                friendly_time = t_obj.strftime("%I%p").lstrip('0')
-                hourly_snippets.append(f"{friendly_time}: {temps_h[i]}°C (Rain {pops_h[i]}%)")
+                friendly_time = t_obj.strftime("%I%p").lstrip("0")
+                hourly_snippets.append(
+                    f"{friendly_time}: {temps_h[i]}°C (Rain {pops_h[i]}%)"
+                )
 
             forecast_text += " | ".join(hourly_snippets) + "\n"
 
@@ -339,6 +2851,7 @@ def get_extended_forecast(user_text: str, records: list) -> str:
             continue
 
     return forecast_text
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CONTEXT BUILDERS
@@ -351,12 +2864,12 @@ def records_to_context(records: list) -> str:
     lines = []
 
     if len(records) > 5:
-        hottest  = max(records, key=lambda r: r.temperature)
-        coldest  = min(records, key=lambda r: r.temperature)
+        hottest   = max(records, key=lambda r: r.temperature)
+        coldest   = min(records, key=lambda r: r.temperature)
         worst_aqi = max(
             (r for r in records if r.aqi is not None),
             key=lambda r: r.aqi,
-            default=None
+            default=None,
         )
 
         lines.append("=== QUICK STATS (Use this for highest/lowest questions) ===")
@@ -367,8 +2880,16 @@ def records_to_context(records: list) -> str:
         lines.append("=========================================================\n")
 
     for r in records[:15]:
-        sr_clean = r.sunrise.split('T')[-1][:5] if r.sunrise and 'T' in r.sunrise else (r.sunrise or "N/A")
-        ss_clean = r.sunset.split('T')[-1][:5]  if r.sunset  and 'T' in r.sunset  else (r.sunset  or "N/A")
+        sr_clean = (
+            r.sunrise.split("T")[-1][:5]
+            if r.sunrise and "T" in r.sunrise
+            else (r.sunrise or "N/A")
+        )
+        ss_clean = (
+            r.sunset.split("T")[-1][:5]
+            if r.sunset and "T" in r.sunset
+            else (r.sunset or "N/A")
+        )
 
         lines.append(
             f"- {r.city} ({r.state}): "
@@ -384,7 +2905,7 @@ def records_to_context(records: list) -> str:
             f"UV={r.uv_index}, AQI={r.aqi}, Warning={r.warning}, "
             f"Sunrise={sr_clean}, Sunset={ss_clean}"
         )
-        # Inject forecast_json as readable text for the LLM
+
         if r.forecast_json:
             try:
                 days = json.loads(r.forecast_json)
@@ -395,84 +2916,135 @@ def records_to_context(records: list) -> str:
                 lines.append(f"  7-DAY FORECAST: {forecast_lines}")
             except Exception:
                 pass
+
     return "\n".join(lines)
 
 
-_LUNAR_KEYWORDS = {
-    "moon", "lunar", "purnima", "amavasya", "moonrise", "moonset",
-    "full moon", "new moon", "crescent", "waxing", "waning", "gibbous",
-    "tide", "tidal", "stargazing", "stars tonight", "night sky",
-    "moonlight", "moon phase", "moon tonight", "ekadashi", "chaturthi",
-    "chandra", "chandrama",
-}
+def build_prompt(user_text: str, weather_context: str, rag_context: str,
+                 system_prompt: str, length: str = "short") -> str:
+    current_time = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
 
-def is_lunar_query(text: str) -> bool:
-    t = text.lower()
-    return any(kw in t for kw in _LUNAR_KEYWORDS)
+    if length == "long":
+        length_instruction = "Answer in 3-5 sentences. Be thorough but stay on topic."
+    else:
+        length_instruction = "Answer in 1-2 sentences. Be direct and concise."
 
-
-def build_prompt(user_text: str, weather_context: str, rag_context: str) -> str:
-    current_time = datetime.now(timezone.utc).strftime('%A, %B %d, %Y')
-    prompt  = f"{SYSTEM_PROMPT}\nCURRENT DATE: {current_time}\n\n"
+    prompt  = f"{system_prompt}\nCURRENT DATE: {current_time}\n"
+    prompt += f"LENGTH INSTRUCTION: {length_instruction}\n\n"
     prompt += f"LIVE DATA:\n{weather_context}\n\n"
     prompt += f"{lunar_context_block()}\n\n"
     if rag_context:
         prompt += f"IMD SAFETY CONTEXT (use only if relevant):\n{rag_context}\n\n"
-    prompt += f"QUESTION: {user_text}\nANSWER (1-3 sentences):"
+    prompt += f"QUESTION: {user_text}\nANSWER:"
     return prompt
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DUAL-LLM ROUTER: Groq (fast) → Gemini (fallback)
+# MULTI-TIER LLM ROUTER
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def ask_llm_async(prompt: str, user_text: str = "") -> str:
-    """
-    Step 1 — Send to Groq (GPT OSS 20B) for fast, cost-efficient dashboard lookups.
-    Step 2 — If GPT OSS 20B returns ROUTE_TO_GEMINI, escalate to Gemini for
-             general knowledge questions outside the dashboard's scope.
-    """
-    # ── Primary: Groq ──────────────────────────────────────────────────────
-    response = await groq_client.chat.completions.create(
-        # model="llama-3.1-8b-instant",
-        model="openai/gpt-oss-20b",
+def _is_route_signal(text: str) -> bool:
+    t = text.strip().upper()
+    return "ROUTE_TO_GEMINI" in t or "ROUTE_TO_GENERAL" in t or len(t) < 5
+
+
+async def _call_groq(model: str, prompt: str, max_tokens: int = 200) -> str:
+    kwargs = dict(
+        model=model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=150,
-        temperature=0.1,   # Low temp keeps the routing flag reliable
+        max_tokens=max_tokens,
+        temperature=0.2,
     )
-    reply = response.choices[0].message.content.strip()
 
-    # ── Fallback: Gemini ───────────────────────────────────────────────────
-    if "ROUTE_TO_GEMINI" in reply:
-        print(f"🔄 Routing to Gemini for: '{user_text}'")
+    if "gpt-oss" in model:
+        kwargs["max_tokens"] = max(max_tokens, 300)
+        kwargs["reasoning_effort"] = "low"
 
-        # Added explicit instruction for Indian context
-        gemini_prompt = (
-            "You are an expert meteorologist, astronomer, and geographer assisting users on an Indian weather dashboard. "
-            "CRITICAL INSTRUCTION: Always answer within an Indian context (e.g., if asked about states, farming, geography,etc assume India) "
-            "UNLESS the user explicitly specifies another country. "
-            "Answer the following question accurately and concisely (2-4 sentences max):\n\n"
-            f"Question: {user_text}"
+    if "qwen" in model:
+        kwargs["reasoning_effort"] = "none"
+
+    response = await groq_client.chat.completions.create(**kwargs)
+
+    content = response.choices[0].message.content
+    if not content or not content.strip():
+        raise ValueError(f"Empty content from {model} — likely token budget exhausted")
+    return content.strip()
+
+
+async def _call_gemini(user_text: str, response_length: str = "short") -> str:
+    sentence_guide = "2-4 sentences" if response_length == "short" else "3-5 sentences"
+    gemini_prompt = (
+        "You are an expert meteorologist, astronomer, and geographer assisting users on "
+        "an Indian weather dashboard. "
+        "CRITICAL: Always assume Indian context (states, farming, geography, festivals, etc.) "
+        "UNLESS the user explicitly names another country. "
+        f"Answer accurately and concisely in {sentence_guide}.\n\n"
+        f"Question: {user_text}"
+    )
+    try:
+        gemini_response = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=gemini_prompt,
+            ),
+        )
+        return gemini_response.text.strip()
+    except Exception as gemini_err:
+        return (
+            "My general knowledge module is currently busy. "
+            "Please try again in a moment, or ask me a live weather question!"
         )
 
-        # Wrap Gemini in a try/except to handle 503 overload errors gracefully
-        try:
-            # google-genai SDK is synchronous — run in executor to stay async-friendly
-            gemini_response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=gemini_prompt,
-                )
-            )
-            return gemini_response.text.strip()
-        except Exception as gemini_error:
-            print(f"❌ Gemini API error: {gemini_error}")
-            return "My general knowledge database is currently experiencing high demand! Please try asking me again in a few minutes, or ask me a live weather question right now."
 
-    return reply
+async def ask_llm_async(
+    prompt_tier1: str,
+    prompt_tier2: str,
+    user_text: str,
+    tier1_tokens: int = 120,
+    tier2_tokens: int = 200,
+    response_length: str = "short",
+) -> str:
+    # Tier 1
+    try:
+        reply = await _call_groq(GROQ_TIER1, prompt_tier1, max_tokens=tier1_tokens)
+        print(f"✅ Tier 1 ({GROQ_TIER1}) answered")
+        if not _is_route_signal(reply):
+            return reply
+        print(f"↗️  Tier 1 routing signal — escalating to Tier 2")
+    except Exception as e:
+        err_str = str(e)
+        if "429" in err_str or "rate_limit" in err_str.lower():
+            print(f"⚠️ Tier 1 rate-limited — trying Tier 2")
+        else:
+            print(f"⚠️ Tier 1 error: {e} — trying Tier 2")
+
+    # Tier 2
+    try:
+        reply = await _call_groq(GROQ_TIER2, prompt_tier2, max_tokens=tier2_tokens)
+        print(f"✅ Tier 2 ({GROQ_TIER2}) answered")
+        if not _is_route_signal(reply):
+            return reply
+        print(f"↗️  Tier 2 routing signal — escalating to Gemini")
+    except Exception as e:
+        err_str = str(e)
+        if "429" in err_str or "rate_limit" in err_str.lower():
+            print(f"⚠️ Tier 2 rate-limited — falling back to Gemini")
+        else:
+            print(f"⚠️ Tier 2 error: {e} — falling back to Gemini")
+
+    # Tier 3: Gemini
+    print(f"🔄 Routing to Gemini for: '{user_text}'")
+    return await _call_gemini(user_text, response_length=response_length)
+
 
 def clean_response(text: str) -> str:
-    text  = text.strip()
+    text = text.strip()
+
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE).strip()
+
+    text = re.sub(r'(?i)ROUTE_TO_GEMINI|ROUTE_TO_GENERAL', '', text).strip()
+
     lower = text.lower()
     for f in [
         "based on the data provided,", "based on the provided data,",
@@ -483,10 +3055,12 @@ def clean_response(text: str) -> str:
             text = text[len(f):].strip()
             text = text[0].upper() + text[1:] if text else text
             break
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    text = " ".join(sentences[:3]).strip()
-    text = re.sub(r'(?i)\s*(End Output|End of Output|End\.|End)\s*$', '', text).strip()
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    text = " ".join(sentences[:5]).strip()
+    text = re.sub(r"(?i)\s*(End Output|End of Output|End\.|End)\s*$", "", text).strip()
     return text
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ENDPOINTS
@@ -494,27 +3068,47 @@ def clean_response(text: str) -> str:
 
 @app.get("/")
 async def root():
-    return {"status": "IMD API is running!"}
+    return {"status": "IMD API v6 is running!"}
+
 
 @app.get("/weather-stats")
 async def get_stats(db: Session = Depends(get_db)):
-    records = db.query(WeatherRecord).order_by(WeatherRecord.state, WeatherRecord.city).all()
+    records = (
+        db.query(WeatherRecord)
+        .order_by(WeatherRecord.state, WeatherRecord.city)
+        .all()
+    )
     if not records:
         raise HTTPException(status_code=404, detail="No weather data found.")
     return [r.to_dict() for r in records]
 
+
 @app.get("/map-data")
 async def get_map_data(db: Session = Depends(get_db)):
     records = db.query(WeatherRecord).all()
-    return [{
-        "city": r.city, "state": r.state, "lat": r.lat, "lon": r.lon,
-        "temperature": r.temperature, "condition": r.condition,
-        "condition_detail": r.condition_detail, "weather_code": r.weather_code,
-        "is_raining": r.is_raining, "is_thunderstorm": r.is_thunderstorm,
-        "is_snowfall": r.is_snowfall, "is_foggy": r.is_foggy,
-        "precipitation": r.precipitation, "warning": r.warning,
-        "aqi": r.aqi, "humidity": r.humidity,
-    } for r in records if r.lat and r.lon]
+    return [
+        {
+            "city":             r.city,
+            "state":            r.state,
+            "lat":              r.lat,
+            "lon":              r.lon,
+            "temperature":      r.temperature,
+            "condition":        r.condition,
+            "condition_detail": r.condition_detail,
+            "weather_code":     r.weather_code,
+            "is_raining":       r.is_raining,
+            "is_thunderstorm":  r.is_thunderstorm,
+            "is_snowfall":      r.is_snowfall,
+            "is_foggy":         r.is_foggy,
+            "precipitation":    r.precipitation,
+            "warning":          r.warning,
+            "aqi":              r.aqi,
+            "humidity":         r.humidity,
+        }
+        for r in records
+        if r.lat and r.lon
+    ]
+
 
 @app.get("/states")
 async def get_states(db: Session = Depends(get_db)):
@@ -525,33 +3119,45 @@ async def get_states(db: Session = Depends(get_db)):
     ).group_by(WeatherRecord.state).order_by(WeatherRecord.state).all()
     return [
         {
-            "state": row.state,
+            "state":      row.state,
             "city_count": row.city_count,
-            "avg_temp": round(row.avg_temp, 1) if row.avg_temp else None,
+            "avg_temp":   round(row.avg_temp, 1) if row.avg_temp else None,
         }
         for row in rows
     ]
 
+
 @app.get("/search")
 async def search_cities(
     q: str = FastAPIQuery(..., min_length=1),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     pattern = f"%{q}%"
     records = (
         db.query(WeatherRecord)
-        .filter(or_(WeatherRecord.city.ilike(pattern), WeatherRecord.state.ilike(pattern)))
+        .filter(
+            or_(
+                WeatherRecord.city.ilike(pattern),
+                WeatherRecord.state.ilike(pattern),
+            )
+        )
         .order_by(WeatherRecord.state, WeatherRecord.city)
         .all()
     )
     return [r.to_dict() for r in records]
 
+
 @app.get("/city/{city_name}")
 async def get_city(city_name: str, db: Session = Depends(get_db)):
-    record = db.query(WeatherRecord).filter(WeatherRecord.city.ilike(f"%{city_name}%")).first()
+    record = (
+        db.query(WeatherRecord)
+        .filter(WeatherRecord.city.ilike(f"%{city_name}%"))
+        .first()
+    )
     if not record:
         raise HTTPException(status_code=404, detail=f"City '{city_name}' not found.")
     return record.to_dict()
+
 
 @app.get("/alerts")
 async def get_alerts(db: Session = Depends(get_db)):
@@ -563,45 +3169,58 @@ async def get_alerts(db: Session = Depends(get_db)):
     )
     return [r.to_dict() for r in records]
 
+
 @app.get("/currently-raining")
 async def currently_raining(db: Session = Depends(get_db)):
     records = db.query(WeatherRecord).filter(
-        or_(WeatherRecord.is_raining == True, WeatherRecord.is_thunderstorm == True)
+        or_(
+            WeatherRecord.is_raining       == True,
+            WeatherRecord.is_thunderstorm  == True,
+        )
     ).all()
     return [
         {
-            "city": r.city,
-            "state": r.state,
+            "city":             r.city,
+            "state":            r.state,
             "condition_detail": r.condition_detail,
-            "precipitation": r.precipitation,
-            "is_thunderstorm": r.is_thunderstorm,
+            "precipitation":    r.precipitation,
+            "is_thunderstorm":  r.is_thunderstorm,
         }
         for r in records
     ]
 
+
 @app.get("/fetch-logs")
 async def get_fetch_logs(limit: int = 20, db: Session = Depends(get_db)):
-    logs = db.query(FetchLog).order_by(FetchLog.fetched_at.desc()).limit(limit).all()
+    logs = (
+        db.query(FetchLog)
+        .order_by(FetchLog.fetched_at.desc())
+        .limit(limit)
+        .all()
+    )
     return [l.to_dict() for l in logs]
+
 
 @app.get("/rag-stats")
 async def get_rag_stats():
     return collection_stats()
 
+
 @app.get("/lunar")
 async def get_lunar():
-    """
-    Returns full lunar phase data for the current moment.
-    The frontend can call this to keep its moon icon in sync with
-    what the AI knows, or to display a richer lunar info card.
-    """
     return get_lunar_data()
+
 
 @app.post("/chat")
 async def chat_with_weather(query: ChatQuery, db: Session = Depends(get_db)):
     user_text = query.text.strip()
     if not user_text:
         raise HTTPException(status_code=400, detail="Query text cannot be empty.")
+
+    # Classify complexity first
+    response_length = classify_response_length(user_text)
+    tier1_tokens    = 120 if response_length == "short" else 280
+    tier2_tokens    = 200 if response_length == "short" else 450
 
     cities  = find_cities_in_query(user_text, db)
     records = (
@@ -616,16 +3235,21 @@ async def chat_with_weather(query: ChatQuery, db: Session = Depends(get_db)):
     rag_hits    = search_bulletins(user_text, n_results=2)
     rag_context = format_rag_context(rag_hits, max_chars=500)
 
-    prompt = build_prompt(user_text, weather_context, rag_context)
+    prompt_tier1 = build_prompt(user_text, weather_context, rag_context,
+                                SYSTEM_PROMPT_TIER1, length=response_length)
+    prompt_tier2 = build_prompt(user_text, weather_context, rag_context,
+                                SYSTEM_PROMPT_TIER2, length=response_length)
 
     try:
-        raw      = await ask_llm_async(prompt, user_text=user_text)
+        raw      = await ask_llm_async(prompt_tier1, prompt_tier2, user_text,
+                                       tier1_tokens=tier1_tokens, tier2_tokens=tier2_tokens, 
+                                       response_length=response_length)
         response = clean_response(raw)
     except Exception as e:
         print(f"❌ LLM error: {e}")
         return {
             "cities_detected": cities[:8],
-            "ai_response": f"AI temporarily unavailable: {str(e)}",
+            "ai_response":     f"AI temporarily unavailable: {str(e)}",
         }
 
     lunar = get_lunar_data()
@@ -635,6 +3259,7 @@ async def chat_with_weather(query: ChatQuery, db: Session = Depends(get_db)):
         "lunar_snapshot":  lunar,
     }
 
+
 @app.get("/health")
 async def health(db: Session = Depends(get_db)):
     city_count  = db.query(WeatherRecord).count()
@@ -642,15 +3267,18 @@ async def health(db: Session = Depends(get_db)):
     rag         = collection_stats()
     lunar       = get_lunar_data()
     return {
-        "status":              "ok",
-        "db_connected":        True,
-        "city_count":          city_count,
-        "state_count":         state_count,
-        "rag_chunks":          rag["total_chunks"],
-        "lunar_phase":         lunar["phase_name"],
-        "lunar_illumination":  lunar["illumination_pct"],
-        "timestamp":           datetime.now(timezone.utc).isoformat(),
+        "status":             "ok",
+        "db_connected":       True,
+        "city_count":         city_count,
+        "state_count":        state_count,
+        "rag_chunks":         rag["total_chunks"],
+        "lunar_phase":        lunar["phase_name"],
+        "lunar_illumination": lunar["illumination_pct"],
+        "groq_tier1":         GROQ_TIER1,
+        "groq_tier2":         GROQ_TIER2,
+        "timestamp":          datetime.now(timezone.utc).isoformat(),
     }
+
 
 if __name__ == "__main__":
     import uvicorn
